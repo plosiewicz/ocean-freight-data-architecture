@@ -1,2 +1,11 @@
 .planning/
 .DS_Store
+
+# Bulk sample data — proof-of-pull artifacts, never committed (respect source terms)
+samples/
+
+# Local credentials / config — no committed secrets (DEL-02 precedent, threat T-02-01)
+.env
+.env.*
+*.key
+secrets.*
