@@ -37,8 +37,8 @@ erDiagram
     }
     FACT_PORT_CALL {
         int    port_call_sk PK "surrogate"
-        int    vessel_sk    FK
         int    port_sk      FK
+        int    vessel_sk    FK
         int    arrival_date_sk FK
         float  dwell_hours "measure"
         float  turnaround_hours "measure"
