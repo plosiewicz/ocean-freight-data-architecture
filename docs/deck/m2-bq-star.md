@@ -44,7 +44,11 @@ Every dimension carries an `INT64` surrogate primary key named `<dim>_sk` (e.g. 
 
 ## Partition & Cluster (MOD-03)
 
-Facts use **BigQuery native tables (not external)**: external tables read from GCS at query time and are slower; the served star is loaded once into native storage. Fact tables are **partitioned on the event/ingestion date column** (`DATE(event_ts)`), so partition pruning is the single biggest cost lever for the temporal use cases (ETA reliability, congestion over time). Facts are **clustered on ≤4 high-selectivity foreign keys** (e.g. `port_sk`, `carrier_sk`, `vessel_sk`) queried/filtered most.
+Facts use **BigQuery native tables (not external)**: external tables read from GCS at query time and are slower; the served star is loaded once into native storage.
+
+Fact tables are **integer-range partitioned on their `*_date_sk` column** — `depart_date_sk` (`fact_voyage_leg`), `arrival_date_sk` (`fact_port_call`), `booked_date_sk` (`fact_booking`), `event_date_sk` (`fact_container_event`). Each is the `YYYYMMDD`-encoded smart surrogate key from `dim_date`, so a date-range predicate prunes partitions directly. Because the dataset is bounded to one region / quarter (CLAUDE.md scope), daily partitions stay well within BigQuery's 10,000-partition cap; partition pruning is the single biggest cost lever for the temporal use cases (ETA reliability, congestion over time). *(If the window later widens past the cap, the fallback is a physical `DATE` partition column per fact with `PARTITION BY` on it.)*
+
+Facts are **clustered on ≤4 high-selectivity foreign keys, specified per fact** (a generic three-key list is not realizable — no single fact carries all of `port_sk`/`carrier_sk`/`vessel_sk`): `fact_voyage_leg` on `vessel_sk, lane_sk`; `fact_port_call` on `port_sk, vessel_sk`; `fact_booking` on `carrier_sk, lane_sk`; `fact_container_event` on `booking_sk, port_sk`.
 
 ## Physical Star (Mermaid)
 
@@ -54,15 +58,16 @@ erDiagram
     FACT_VOYAGE_LEG    }o--|| DIM_VESSEL    : "performed by"
     FACT_VOYAGE_LEG    }o--|| DIM_LANE      : "on lane"
     FACT_VOYAGE_LEG    }o--|| DIM_DATE      : "departed on"
+    FACT_PORT_CALL     }o--|| DIM_VESSEL    : "made by"
     FACT_PORT_CALL     }o--|| DIM_PORT      : "at port"
-    FACT_PORT_CALL     }o--|| DIM_VESSEL    : "by vessel"
-    FACT_PORT_CALL     }o--|| DIM_DATE      : "called on"
-    FACT_BOOKING       }o--|| DIM_CARRIER   : "carried by"
+    FACT_PORT_CALL     }o--|| DIM_DATE      : "arrived on"
+    FACT_BOOKING       }o--|| DIM_CARRIER   : "booked with"
     FACT_BOOKING       }o--|| DIM_LANE      : "on lane"
-    FACT_BOOKING       }o--|| DIM_COMMODITY : "of commodity"
+    FACT_BOOKING       }o--|| DIM_COMMODITY : "carrying"
     FACT_BOOKING       }o--|| DIM_DATE      : "booked on"
-    FACT_CONTAINER_EVENT }o--|| DIM_PORT    : "at port"
-    FACT_CONTAINER_EVENT }o--|| DIM_DATE    : "on date"
+    FACT_CONTAINER_EVENT }o--|| DIM_PORT     : "occurred at"
+    FACT_CONTAINER_EVENT }o--|| DIM_DATE     : "occurred on"
+    FACT_CONTAINER_EVENT }o--|| FACT_BOOKING : "belongs to"
     DIM_VESSEL         }o--|| DIM_CARRIER   : "operated by"
 
     FACT_VOYAGE_LEG {
@@ -91,7 +96,7 @@ erDiagram
         int    lane_sk        FK
         int    commodity_sk   FK
         int    booked_date_sk FK
-        float  booked_teu
+        int    booked_teu
         float  declared_weight_kg
         float  freight_amount
         string provenance "synthetic (designed now)"
@@ -107,7 +112,7 @@ erDiagram
         string provenance "synthetic (designed now)"
     }
     DIM_DATE {
-        int    date_sk PK "surrogate"
+        int    date_sk PK "YYYYMMDD smart surrogate (static)"
         date   full_date UK "natural key (static)"
         int    year
         int    quarter
@@ -117,7 +122,7 @@ erDiagram
     DIM_PORT {
         int    port_sk PK "surrogate"
         string unlocode UK "natural key (SCD1 overwrite)"
-        string name
+        string port_name
         float  latitude
         float  longitude
         string country
@@ -125,7 +130,7 @@ erDiagram
     DIM_VESSEL {
         int    vessel_sk PK "surrogate"
         string imo       UK "natural key"
-        string name
+        string vessel_name
         string flag_state
         date   scd2_effective_from "SCD2"
         date   scd2_expiry_to      "SCD2"
@@ -134,7 +139,7 @@ erDiagram
     DIM_CARRIER {
         int    carrier_sk PK "surrogate"
         string scac       UK "natural key"
-        string name
+        string carrier_name
         string alliance
         date   scd2_effective_from "SCD2"
         date   scd2_expiry_to      "SCD2"
@@ -149,7 +154,7 @@ erDiagram
     DIM_COMMODITY {
         int    commodity_sk PK "surrogate"
         string hs_code UK "natural key (SCD1 overwrite, Comtrade taxonomy)"
-        string description
+        string commodity_desc
     }
 ```
 

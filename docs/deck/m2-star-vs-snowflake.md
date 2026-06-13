@@ -11,7 +11,7 @@ BigQuery is a serverless **columnar MPP** engine. Storage is cheap, and a query 
 ## Supporting evidence
 
 - **Google denormalization guidance (the anchor citation):** "BigQuery performs best when your data is denormalized … take advantage of nested and repeated fields." This *strengthens* the anti-snowflake case — Google recommends going even flatter than a star, so a star sits comfortably on the denormalized side of the line.
-- **Measured improvement:** columnar warehouses show roughly **~49% average query-response improvement on denormalized vs. normalized schemas** — the cost of normalization is paid at query time, not saved.
+- **Query-time cost of normalization:** on a columnar MPP engine the cost of normalization is paid at *query* time (extra joins), not saved at storage time — so denormalized/flat schemas measurably reduce query response time versus snowflaked ones. (We state this as a mechanism, not a single benchmark number; the magnitude is workload-dependent.)
 - **Mechanism:** joins require data coordination (communication bandwidth) across slots, while denormalization localizes data to individual slots so execution runs in parallel — which is exactly why flat dimensions beat snowflaked ones on a columnar MPP engine.
 
 ---

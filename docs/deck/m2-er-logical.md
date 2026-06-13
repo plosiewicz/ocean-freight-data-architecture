@@ -39,7 +39,7 @@ erDiagram
         int    port_call_sk PK "surrogate"
         int    vessel_sk    FK
         int    port_sk      FK
-        int    arrive_date_sk FK
+        int    arrival_date_sk FK
         float  dwell_hours "measure"
         float  turnaround_hours "measure"
         float  anchorage_queue_hours "measure: queue time"
@@ -51,9 +51,10 @@ erDiagram
         int    lane_sk      FK
         int    commodity_sk FK
         int    booked_date_sk FK
-        int    teu "measure"
-        float  gross_weight_kg "measure"
-        string provenance "real | synthetic"
+        int    booked_teu "measure"
+        float  declared_weight_kg "measure"
+        float  freight_amount "measure"
+        string provenance "synthetic (designed now)"
     }
     FACT_CONTAINER_EVENT {
         int    container_event_sk PK "surrogate"
@@ -61,11 +62,12 @@ erDiagram
         int    port_sk    FK
         int    event_date_sk FK
         string event_type "gate-in | load | discharge | gate-out"
-        float  dwell_hours "measure"
-        string provenance "real | synthetic"
+        int    event_sequence "measure"
+        float  hours_since_prior_event "measure: duration since prior event"
+        string provenance "synthetic (designed now)"
     }
     DIM_DATE {
-        int  date_sk PK "surrogate (static, immutable)"
+        int  date_sk PK "YYYYMMDD smart surrogate (static, immutable)"
         date full_date UK "natural key"
         int  year
         int  quarter
@@ -100,9 +102,9 @@ erDiagram
     }
     DIM_LANE {
         int    lane_sk PK "surrogate"
-        string origin_unlocode UK "port-pair natural key"
-        string dest_unlocode   UK "port-pair natural key"
-        string trade_region
+        string lane_key UK "composite origin+dest UN/LOCODE"
+        string origin_unlocode
+        string dest_unlocode
     }
     DIM_COMMODITY {
         int    commodity_sk PK "surrogate"
