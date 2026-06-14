@@ -49,7 +49,11 @@ CARRIER_SCACS: tuple[str, ...] = ("MAEU", "MSCU", "CMDU", "HLCU", "COSU", "ONEY"
 # Seeded quarter window — matches the AIS Q1 2024 anchor (no wall-clock, D-12).
 QUARTER_START: dt.date = dt.date(2024, 1, 1)
 QUARTER_END: dt.date = dt.date(2024, 3, 31)
-# The synthetic-event Bronze partition anchor (D-05 dt=).
+# Quarter-start anchor (D-05). NOTE (CR-03): dated synthetic streams (events,
+# bookings) are partitioned by EACH RECORD's OWN natural date at landing — they
+# do NOT all sit under this anchor. This constant is now only the landing anchor
+# for the TIMELESS schedules stream (proforma, one-per-lane, no per-record date),
+# so a non-date value never masquerades under a dt= key for dated records.
 EVENT_PARTITION_DT: str = QUARTER_START.isoformat()
 
 # Container event lifecycle stages (fixed order -> byte-stable iteration).
