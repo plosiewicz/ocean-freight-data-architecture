@@ -49,8 +49,13 @@ LSCI_URL = "https://data360api.worldbank.org/data360/data"
 LSCI_DATABASE_ID = "UNCTAD_LSC"
 
 # World Bank LPI overall score (1-5), keyless; some rows are null aggregates.
+# LPI is published only in specific years (2007/2010/.../2018/2023) with uneven
+# per-country coverage, so a fixed `date=YYYY` query frequently returns all-null
+# (e.g. date=2023 came back empty). Default to "mrv" (most-recent-value per
+# country) to get each country's latest available score; a concrete year can
+# still be forced via --lpi-date.
 LPI_URL = "https://api.worldbank.org/v2/country/all/indicator/LP.LPI.OVRL.XQ"
-LPI_DATE_DEFAULT = "2023"
+LPI_DATE_DEFAULT = "mrv"
 
 # UN Comtrade O-D — keyless PUBLIC PREVIEW (C=commodities, A=annual, HS class).
 COMTRADE_URL = "https://comtradeapi.un.org/public/v1/preview/C/A/HS"
@@ -207,10 +212,17 @@ def fetch_lsci(*, session: requests.Session | None = None) -> Any:
 
 
 def fetch_lpi(*, date: str, session: requests.Session | None = None) -> list[dict[str, Any]]:
-    """Fetch + filter World Bank LPI overall (keyless); null aggregates dropped."""
-    payload = _get_json(
-        LPI_URL, params={"date": date, "format": "json", "per_page": "400"}, session=session
-    )
+    """Fetch + filter World Bank LPI overall (keyless); null aggregates dropped.
+
+    ``date="mrv"`` (the default) requests each country's most-recent value via the
+    WB ``mrv=1`` param — robust to LPI's sparse per-year coverage. Any other value
+    is treated as a concrete ``date=YYYY`` query.
+    """
+    if date == "mrv":
+        params = {"mrv": "1", "format": "json", "per_page": "400"}
+    else:
+        params = {"date": date, "format": "json", "per_page": "400"}
+    payload = _get_json(LPI_URL, params=params, session=session)
     return parse_lpi(payload)
 
 
@@ -244,7 +256,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--bucket", default=BRONZE_BUCKET_DEFAULT, help=f"Bronze bucket (default {BRONZE_BUCKET_DEFAULT}).")
     parser.add_argument("--cache-dir", type=Path, default=LOCAL_CACHE_DEFAULT, help=f"Local staging dir (default {LOCAL_CACHE_DEFAULT}; gitignored).")
-    parser.add_argument("--lpi-date", default=LPI_DATE_DEFAULT, help=f"LPI year (default {LPI_DATE_DEFAULT}).")
+    parser.add_argument("--lpi-date", default=LPI_DATE_DEFAULT, help=f"LPI year, or 'mrv' for most-recent-value per country (default {LPI_DATE_DEFAULT}).")
     parser.add_argument("--comtrade-reporter", default=COMTRADE_REPORTER_DEFAULT, help="Comtrade reporter code (default 842=USA).")
     parser.add_argument("--comtrade-partners", default=",".join(COMTRADE_PARTNERS_DEFAULT), help="Comma-separated Comtrade partner codes (bounded set).")
     parser.add_argument("--comtrade-period", default=COMTRADE_PERIOD_DEFAULT, help=f"Comtrade period/year (default {COMTRADE_PERIOD_DEFAULT}).")
