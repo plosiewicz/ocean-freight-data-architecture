@@ -1,4 +1,5 @@
 .planning/
+.claude/
 .DS_Store
 
 # Bulk sample data — proof-of-pull artifacts, never committed (respect source terms)
