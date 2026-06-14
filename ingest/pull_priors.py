@@ -146,11 +146,22 @@ def comtrade_headers() -> dict[str, str]:
 
 
 def _validate_lsci(payload: Any) -> None:
-    """Fail loud unless the LSCI payload has the expected top-level shape."""
-    if not isinstance(payload, dict) or "data" not in payload and "count" not in payload:
+    """Fail loud unless the LSCI payload has the expected Data360 shape.
+
+    The real Data360 ``UNCTAD_LSC`` response is a dict carrying a ``value`` list
+    of observations (and a ``count`` total). ``fetch_lsci`` reads ``value`` /
+    ``count`` — NOT ``data`` — so validate that actual shape. Explicit
+    parentheses: never rely on ``or ... and ...`` precedence for a guard.
+    """
+    if not (isinstance(payload, dict) and "value" in payload):
         raise ValueError(
-            "LSCI response missing expected top-level keys (data/count). "
+            "LSCI response missing expected top-level 'value' list. "
             "Refusing to land (V5/T-03-11)."
+        )
+    if not isinstance(payload["value"], list) or not payload["value"]:
+        raise ValueError(
+            "LSCI 'value' is absent/empty — pagination or upstream shape changed. "
+            "Refusing to land an empty conditioner (D-13)."
         )
 
 
