@@ -1,0 +1,146 @@
+\documentclass[11pt]{article}
+
+% ── If text looks too small, the cleanest fix is to switch the line above to:
+%      \documentclass[border=8pt]{standalone}
+%    and keep only ONE tikzpicture per file (compile each diagram separately).
+\usepackage[a3paper,landscape,margin=1cm]{geometry} % big canvas for the constellation
+\usepackage[table]{xcolor}
+\usepackage{tikz}
+\usepackage{adjustbox}
+\usetikzlibrary{positioning,arrows.meta,shapes.geometric}
+
+% ── entity fill / header colours
+\definecolor{factfill}{RGB}{214,229,255}
+\definecolor{facthead}{RGB}{142,182,242}
+\definecolor{dimfill}{RGB}{255,235,205}
+\definecolor{dimhead}{RGB}{247,201,134}
+
+% ── one macro builds a Mermaid-style entity box: {headercolour}{TITLE}{rows separated by \\}
+\newcommand{\ent}[3]{%
+  \begin{tabular}{@{\hspace{4pt}}l@{\hspace{4pt}}}
+    \rowcolor{#1}\rule[-0.9ex]{0pt}{2.8ex}\textbf{#2}\\\hline
+    \rule{0pt}{2.1ex}#3\\[1pt]
+  \end{tabular}}
+
+\tikzset{
+  fact/.style={draw,fill=factfill,rounded corners=1pt,inner sep=1pt,font=\footnotesize},
+  dim/.style ={draw,fill=dimfill, rounded corners=1pt,inner sep=1pt,font=\footnotesize},
+  rel/.style ={semithick},
+  lab/.style ={fill=white,inner sep=1pt,font=\tiny},
+}
+
+\begin{document}
+\pagestyle{empty}
+
+% ===================================================================
+% DIAGRAM 1 — ER / star-schema (4 facts + 6 dims).  Reading: every
+% fact row references exactly one row of each dimension (many-to-one).
+% Nudge the (x,y) in each \node to taste.
+% ===================================================================
+\begin{center}\Large\textbf{Ocean Freight ER / Star Schema --- 4 facts + 6 dimensions}\end{center}
+\begin{adjustbox}{max width=\textwidth}
+\begin{tikzpicture}[>=Stealth]
+
+% ---- FACT tables (y = 0) ----
+\node[fact] (vl) at (-13.5,0) {\ent{facthead}{FACT\_VOYAGE\_LEG}{%
+  voyage\_leg\_sk\,(PK)\\ vessel\_sk\,(FK)\\ lane\_sk\,(FK)\\ depart\_date\_sk\,(FK)\\
+  transit\_hours\\ distance\_nm\\ schedule\_delta\_hours\\ provenance}};
+
+\node[fact] (pc) at (-4.5,0) {\ent{facthead}{FACT\_PORT\_CALL}{%
+  port\_call\_sk\,(PK)\\ port\_sk\,(FK)\\ vessel\_sk\,(FK)\\ arrival\_date\_sk\,(FK)\\
+  dwell\_hours\\ turnaround\_hours\\ anchorage\_queue\_hours\\ provenance}};
+
+\node[fact] (ce) at (4.5,0) {\ent{facthead}{FACT\_CONTAINER\_EVENT}{%
+  container\_event\_sk\,(PK)\\ booking\_sk\,(FK)\\ port\_sk\,(FK)\\ event\_date\_sk\,(FK)\\
+  event\_type\\ event\_sequence\\ hours\_since\_prior\_event\\ provenance}};
+
+\node[fact] (bk) at (13.5,0) {\ent{facthead}{FACT\_BOOKING}{%
+  booking\_sk\,(PK)\\ carrier\_sk\,(FK)\\ lane\_sk\,(FK)\\ commodity\_sk\,(FK)\\
+  booked\_date\_sk\,(FK)\\ booked\_teu\\ declared\_weight\_kg\\ freight\_amount\\ provenance}};
+
+% ---- DIMENSION tables (top y = 8, bottom y = -8) ----
+\node[dim] (vessel) at (-9,8) {\ent{dimhead}{DIM\_VESSEL}{%
+  vessel\_sk\,(PK)\\ imo\,(UK)\\ vessel\_name\\ flag\_state\\
+  scd2\_effective\_from\\ scd2\_expiry\_to\\ is\_current}};
+
+\node[dim] (lane) at (0,8) {\ent{dimhead}{DIM\_LANE}{%
+  lane\_sk\,(PK)\\ lane\_key\,(UK)\\ origin\_unlocode\\ dest\_unlocode}};
+
+\node[dim] (carrier) at (9,8) {\ent{dimhead}{DIM\_CARRIER}{%
+  carrier\_sk\,(PK)\\ scac\,(UK)\\ carrier\_name\\ alliance\\
+  scd2\_effective\_from\\ scd2\_expiry\_to\\ is\_current}};
+
+\node[dim] (commodity) at (16,8) {\ent{dimhead}{DIM\_COMMODITY}{%
+  commodity\_sk\,(PK)\\ hs\_code\,(UK)\\ commodity\_desc}};
+
+\node[dim] (port) at (-9,-8) {\ent{dimhead}{DIM\_PORT}{%
+  port\_sk\,(PK)\\ unlocode\,(UK)\\ port\_name\\ latitude\\ longitude\\ country}};
+
+\node[dim] (date) at (2,-8) {\ent{dimhead}{DIM\_DATE}{%
+  date\_sk\,(PK)\\ full\_date\,(UK)\\ year\\ quarter\\ month\\ day\_of\_week}};
+
+% ---- relationships (fact --many-to-one--> dimension) ----
+\draw[rel] (vl) -- node[lab]{performed by} (vessel);
+\draw[rel] (vl) -- node[lab]{on lane}      (lane);
+\draw[rel] (vl) -- node[lab]{departed on}  (date);
+
+\draw[rel] (pc) -- node[lab]{made by}    (vessel);
+\draw[rel] (pc) -- node[lab]{at port}    (port);
+\draw[rel] (pc) -- node[lab]{arrived on} (date);
+
+\draw[rel] (bk) -- node[lab]{booked with} (carrier);
+\draw[rel] (bk) -- node[lab]{on lane}     (lane);
+\draw[rel] (bk) -- node[lab]{carrying}    (commodity);
+\draw[rel] (bk) -- node[lab]{booked on}   (date);
+
+\draw[rel] (ce) -- node[lab]{occurred at} (port);
+\draw[rel] (ce) -- node[lab]{occurred on} (date);
+\draw[rel] (ce) -- node[lab]{belongs to}  (bk);
+
+\draw[rel] (vessel) -- node[lab]{operated by} (carrier);
+
+\end{tikzpicture}
+\end{adjustbox}
+
+\vspace{0.4cm}
+\footnotesize\textit{Cardinality: each relationship is many-to-one --- many fact rows
+reference one dimension row. PK = surrogate key, FK = foreign key, UK = natural business key.
+Physical notes: fact tables are integer-range partitioned on \texttt{*\_date\_sk} and clustered
+on $\leq$4 FKs; \texttt{DIM\_VESSEL}/\texttt{DIM\_CARRIER} are SCD2, the rest SCD1, \texttt{DIM\_DATE} static.}
+
+\clearpage
+
+% ===================================================================
+% DIAGRAM 2 — ArangoDB property graph (ocean_network):
+% 5 vertex collections + 4 edge collections.
+% ===================================================================
+\begin{center}\Large\textbf{ArangoDB Property Graph --- \texttt{ocean\_network}}\end{center}
+\begin{adjustbox}{max width=\textwidth}
+\begin{tikzpicture}[>=Stealth,node distance=2cm,
+  vtx/.style={draw,ellipse,fill=dimfill,align=center,font=\footnotesize,minimum height=1cm,inner sep=4pt},
+  gedge/.style={semithick},
+  glab/.style={fill=white,inner sep=2pt,font=\scriptsize}]
+
+\node[vtx] (carriers) at (0,0)   {\textbf{carriers}\\\scriptsize \_key = SCAC};
+\node[vtx] (vessels)  at (5,0)   {\textbf{vessels}\\\scriptsize \_key = IMO};
+\node[vtx] (ports)    at (10,0)  {\textbf{ports}\\\scriptsize \_key = UN/LOCODE};
+\node[vtx] (lanes)    at (5,-4)  {\textbf{lanes}\\\scriptsize \_key = origin+dest};
+\node[vtx] (choke)    at (10,-4) {\textbf{chokepoints}\\\scriptsize curated set};
+
+\draw[->,gedge] (carriers) -- node[glab]{operates}  (vessels);
+\draw[->,gedge] (vessels)  -- node[glab]{calls\_at} (ports);
+\draw[->,gedge] (lanes)    -- node[glab]{transits\_chokepoint\\(rule-based)} (choke);
+
+% self-loop on ports for the route/segment edge with its 4 weights
+\draw[->,gedge] (ports) to[out=60,in=120,looseness=6]
+  node[glab,above]{route / segment\\ \scriptsize [transit\_time\_hours, distance\_nm,\\ \scriptsize service\_frequency, reliability\_score]} (ports);
+
+\end{tikzpicture}
+\end{adjustbox}
+
+\vspace{0.4cm}
+\footnotesize\textit{Single named graph \texttt{ocean\_network}: 5 vertex + 4 edge collections.
+Edges are structural (one per port-pair lane), not per-event. Capabilities are AQL-only
+(traversal, weighted \texttt{SHORTEST\_PATH}, \texttt{GEO\_DISTANCE}) --- no Pregel (removed in 3.12).}
+
+\end{document}
