@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import math
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -92,6 +93,31 @@ class Conditioner:
         # D-13) and is documented as a deviation in 03-05-SUMMARY.md.
         _lsci_vals = list(self.lsci_by_country.values())
         self._lsci_fallback = (sum(_lsci_vals) / len(_lsci_vals)) if _lsci_vals else 0.0
+
+        # WR-03: make the mean-LSCI fallback LOUD and BOUNDED. The required
+        # countries are exactly those every lane needs (the four US-port countries
+        # + the five Comtrade partners) — the distinct values of port_country. WARN
+        # listing which required countries fell back to the mean; RAISE if ALL of
+        # them are missing, which signals a pagination/shape failure (the full LSCI
+        # should now cover them) rather than genuine sparse coverage.
+        required_countries = sorted(set(self.port_country.values()))
+        fell_back = [c for c in required_countries if c not in self.lsci_by_country]
+        if required_countries and len(fell_back) == len(required_countries):
+            raise ValueError(
+                "LSCI conditioner is missing ALL required countries "
+                f"{required_countries} — every lane would get the same fabricated "
+                "mean fallback. This signals an LSCI pagination/shape failure, not "
+                "genuine sparse coverage. Refusing to condition on it (WR-03/D-13)."
+            )
+        if fell_back:
+            warnings.warn(
+                "LSCI fallback: the following required countries are absent from "
+                f"the landed LSCI and will use the MEAN landed value: {fell_back}. "
+                "Lanes touching them carry a fabricated connectivity factor "
+                "(WR-03 — bounded, but verify the LSCI pull is complete).",
+                stacklevel=2,
+            )
+
         lpi_vals = list(self.lpi_by_country.values())
         self._lpi_max = max(lpi_vals, default=0.0)
         self._lpi_min = min(lpi_vals, default=0.0)

@@ -36,12 +36,19 @@ import json
 import os
 import sys
 import time
+import warnings
 from pathlib import Path
 from typing import Any
 
 import requests
 
 import lib.gcs
+
+# The port countries every synthetic lane needs (the four US ports + the five
+# bounded Comtrade partners). A complete prior pull MUST cover these (WR-04).
+REQUIRED_PORT_COUNTRIES: frozenset[str] = frozenset(
+    {"USA", "CHN", "JPN", "DEU", "KOR", "NLD"}
+)
 
 # --- Verified keyless endpoints (live curl + JSON read, 2026-06-14) --------- #
 # UNCTAD LSCI via World Bank Data360 (keyless; paginate skip/top if needed).
@@ -243,6 +250,18 @@ def fetch_lsci(*, session: requests.Session | None = None) -> Any:
             break
         rows.extend(chunk)
         skip += len(chunk)
+
+    # WR-04: do NOT trust the upstream `count` blindly. If we collected fewer rows
+    # than the reported total, the pull was truncated (a page returned empty
+    # mid-set, or pagination stopped early) — a partial pull is otherwise
+    # indistinguishable from a complete one downstream. Fail loud rather than land
+    # a silently-partial conditioner.
+    if isinstance(total, int) and len(rows) < total:
+        raise ValueError(
+            f"LSCI pull truncated: collected {len(rows)} rows but upstream reports "
+            f"count={total}. Refusing to land a partial conditioner (WR-04/D-13)."
+        )
+
     return {"count": total if isinstance(total, int) else len(rows), "value": rows}
 
 
@@ -258,7 +277,23 @@ def fetch_lpi(*, date: str, session: requests.Session | None = None) -> list[dic
     else:
         params = {"date": date, "format": "json", "per_page": "400"}
     payload = _get_json(LPI_URL, params=params, session=session)
-    return parse_lpi(payload)
+    kept = parse_lpi(payload)
+
+    # WR-04: assert the required port countries survived the (single-page) pull.
+    # fetch_lpi reads only the first page (per_page=400 covers ~266 economies
+    # today), so a silent truncation would simply drop countries with no error —
+    # warn loudly if any required country is absent from the kept ISO3 set.
+    kept_iso3 = {row.get("countryiso3code") for row in kept}
+    missing = REQUIRED_PORT_COUNTRIES - kept_iso3
+    if missing:
+        warnings.warn(
+            f"LPI pull is missing required port countries {sorted(missing)} "
+            f"(kept {len(kept)} country rows). The pull may be truncated or the "
+            "indicator coverage changed — downstream delay conditioning for those "
+            "countries will fail loud (WR-04).",
+            stacklevel=2,
+        )
+    return kept
 
 
 def fetch_comtrade(
