@@ -7,9 +7,9 @@ The logical ER model for the Ocean Freight Forwarder architecture. The entity se
 ## Logical ER Diagram (MOD-01)
 
 ```mermaid
-%% Source pattern: mermaid.js.org/syntax/entityRelationshipDiagram.html
-%% Locked entity set: 4 facts + 6 dims (D-01..D-03). Crow's-foot cardinality; PK/FK/UK markers.
 erDiagram
+    %% Source pattern: mermaid.js.org/syntax/entityRelationshipDiagram.html
+    %% Locked entity set: 4 facts + 6 dims (D-01..D-03). Crow's-foot cardinality; PK/FK/UK markers.
     FACT_VOYAGE_LEG     }o--|| DIM_VESSEL    : "performed by"
     FACT_VOYAGE_LEG     }o--|| DIM_LANE      : "on lane"
     FACT_VOYAGE_LEG     }o--|| DIM_DATE      : "departed on"

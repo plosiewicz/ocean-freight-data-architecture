@@ -53,8 +53,8 @@ Facts are **clustered on ≤4 high-selectivity foreign keys, specified per fact*
 ## Physical Star (Mermaid)
 
 ```mermaid
-%% Source pattern: mermaid.js.org/syntax/entityRelationshipDiagram.html
 erDiagram
+    %% Source pattern: mermaid.js.org/syntax/entityRelationshipDiagram.html
     FACT_VOYAGE_LEG    }o--|| DIM_VESSEL    : "performed by"
     FACT_VOYAGE_LEG    }o--|| DIM_LANE      : "on lane"
     FACT_VOYAGE_LEG    }o--|| DIM_DATE      : "departed on"
