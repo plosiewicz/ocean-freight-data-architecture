@@ -203,12 +203,36 @@ def _land_json(
 
 
 def fetch_lsci(*, session: requests.Session | None = None) -> Any:
-    """Fetch UNCTAD LSCI from World Bank Data360 (keyless), validated."""
-    payload = _get_json(
-        LSCI_URL, params={"DATABASE_ID": LSCI_DATABASE_ID}, session=session
+    """Fetch UNCTAD LSCI from World Bank Data360 (keyless), validated.
+
+    Data360 caps a single response at 1000 observations (``count`` reports the
+    true total, ~11,875). A non-paginated GET therefore returns only the first
+    page — REF_AREA codes A–D — which drops every major US trade partner
+    (USA/CHN/JPN/DEU/KOR/NLD live in later pages). Walk skip/top until the full
+    set is retrieved so the lane-weight conditioner sees real per-country LSCI
+    rather than a mean fallback.
+    """
+    PAGE = 1000
+    first = _get_json(
+        LSCI_URL, params={"DATABASE_ID": LSCI_DATABASE_ID, "skip": 0, "top": PAGE},
+        session=session,
     )
-    _validate_lsci(payload)
-    return payload
+    _validate_lsci(first)
+    total = first.get("count")
+    rows = list(first.get("value") or [])
+    skip = len(rows)
+    while isinstance(total, int) and skip < total:
+        page = _get_json(
+            LSCI_URL,
+            params={"DATABASE_ID": LSCI_DATABASE_ID, "skip": skip, "top": PAGE},
+            session=session,
+        )
+        chunk = list(page.get("value") or [])
+        if not chunk:
+            break
+        rows.extend(chunk)
+        skip += len(chunk)
+    return {"count": total if isinstance(total, int) else len(rows), "value": rows}
 
 
 def fetch_lpi(*, date: str, session: requests.Session | None = None) -> list[dict[str, Any]]:
