@@ -77,3 +77,42 @@ def test_bbox_filter() -> None:
     )
     out = pull_ais.filter_bbox(table, HOUSTON)
     assert out.column("mmsi").to_pylist() == [10]
+
+
+def test_bbox_filter_drops_null_and_short_wkb() -> None:
+    """Null or truncated (<21 byte) WKB rows are DROPPED, not raised (CR-02).
+
+    Real AIS extracts carry rows with a missing position fix; the filter must
+    skip them and keep the valid in-bbox rows rather than crashing the whole
+    day's landing with TypeError ('NoneType' subscript) or struct.error.
+    """
+    lo_min, lo_max, la_min, la_max = HOUSTON
+    inside_lon = (lo_min + lo_max) / 2.0
+    inside_lat = (la_min + la_max) / 2.0
+    table = pa.table(
+        {
+            "mmsi": [20, 21, 22, 23],
+            "vessel_type": [70, 70, 70, 70],
+            "geometry": [
+                _wkb_point(inside_lon, inside_lat),  # valid in-box -> keep
+                None,                                 # null geometry -> drop
+                b"\x01\x01\x00\x00\x00",             # 5-byte truncated WKB -> drop
+                _wkb_point(lo_min - 1.0, inside_lat),  # valid but out-of-box -> drop
+            ],
+        }
+    )
+    out = pull_ais.filter_bbox(table, HOUSTON)
+    assert out.column("mmsi").to_pylist() == [20]
+
+
+def test_bbox_filter_all_invalid_returns_empty() -> None:
+    """When every row has a null/short geometry, return an empty table (no crash)."""
+    table = pa.table(
+        {
+            "mmsi": [30, 31],
+            "vessel_type": [70, 70],
+            "geometry": [None, b"\x01\x01"],
+        }
+    )
+    out = pull_ais.filter_bbox(table, HOUSTON)
+    assert out.num_rows == 0

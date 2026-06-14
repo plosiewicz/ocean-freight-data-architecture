@@ -101,19 +101,36 @@ def filter_bbox(table: pa.Table, bbox: tuple[float, float, float, float]) -> pa.
 
     ``bbox`` is (lon_min, lon_max, lat_min, lat_max). Decodes the geometry column
     to lon/lat arrays once, then filters — O(rows), no per-row Python filter call.
+
+    Rows whose geometry is null or whose WKB blob is too short to hold a Point
+    (1 byte-order flag + 4 type bytes + two 8-byte doubles = 21 bytes) are DROPPED
+    rather than crashing the whole day's landing: real AIS extracts routinely carry
+    rows with a missing position fix (CR-02). Valid in-bbox rows are kept.
     """
     lo_min, lo_max, la_min, la_max = bbox
     geoms = table.column("geometry").to_pylist()
     if not geoms:
         return table
-    lons, lats = zip(*(wkb_point_lonlat(g) for g in geoms))
+    lons: list[float] = []
+    lats: list[float] = []
+    valid_idx: list[int] = []
+    for i, g in enumerate(geoms):
+        if g is None or len(g) < 21:
+            continue  # missing/short position fix — exclude, do not crash
+        lon, lat = wkb_point_lonlat(g)
+        lons.append(lon)
+        lats.append(lat)
+        valid_idx.append(i)
+    if not valid_idx:
+        return table.slice(0, 0)
+    sub = table.take(pa.array(valid_idx, type=pa.int64()))
     lon_arr = pa.array(lons, type=pa.float64())
     lat_arr = pa.array(lats, type=pa.float64())
     mask = pc.and_(
         pc.and_(pc.greater_equal(lon_arr, lo_min), pc.less_equal(lon_arr, lo_max)),
         pc.and_(pc.greater_equal(lat_arr, la_min), pc.less_equal(lat_arr, la_max)),
     )
-    return table.filter(mask)
+    return sub.filter(mask)
 
 
 def thin_5min(table: pa.Table) -> pa.Table:
