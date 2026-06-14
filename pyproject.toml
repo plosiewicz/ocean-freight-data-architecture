@@ -1,0 +1,56 @@
+# Ocean Freight Forwarder Data Architecture (MSDS 683) — Python build config.
+# Single source of truth for dependencies + Python version pin.
+# Provenance: .planning/phases/03-ingestion-bronze/03-PLAN.md Task 1; 03-RESEARCH.md
+# § Standard Stack Installation; CLAUDE.md prescriptive stack.
+#
+# DETERMINISM ANCHOR (D-12 / ING-03): Faker and numpy are EXACT == pins. These two
+# pins anchor the byte-identical synthetic-data contract recorded alongside
+# `synthetic.sha256` (added in a later plan). The whole team must share the same
+# Faker patch and the same numpy major to reproduce byte-identical generator output.
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ocean-freight-data-arch"
+version = "0.1.0"
+description = "Ocean Freight Forwarder data architecture — GCS bronze ingestion (MSDS 683)"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    # --- Determinism anchors (EXACT pins — DO NOT relax to range pins) ---
+    # Faker output is NOT stable across patch releases (Faker's own docs), so the
+    # patch is pinned exactly. Pin recorded alongside synthetic.sha256 as provenance.
+    "Faker==40.1.2",
+    # DELIBERATE DEVIATION from CLAUDE.md's prescribed NumPy 2.x: numpy==1.26.4 is the
+    # byte-identical determinism anchor per 03-RESEARCH.md A5 / Pitfall 4. The team must
+    # share one numpy major to get byte-identical default_rng draws; the locally
+    # verified + frozen version is 1.26.4. KEEP THIS PIN (do not bump to 2.x).
+    "numpy==1.26.4",
+    # --- Pinned support libraries (exact for reproducible Bronze landing) ---
+    "pyarrow==16.1.0",
+    "google-cloud-storage==3.10.1",
+    "pandas==2.3.3",
+    "requests==2.32.3",
+    # shapely: latest acceptable (optional WKB decode for AIS bbox filtering)
+    "shapely",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["lib", "scripts", "ingest", "data_gen"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]

@@ -5,8 +5,20 @@
 # Bulk sample data — proof-of-pull artifacts, never committed (respect source terms)
 samples/
 
-# Local credentials / config — no committed secrets (DEL-02 precedent, threat T-02-01)
+# Bulk pipeline data — AIS cache + synthetic JSONL; only synthetic.sha256 is committed
+# (the determinism manifest lands in a later plan). Threat T-03-01.
+data/
+
+# Local credentials / config — no committed secrets (DEL-02 precedent, threats T-02-01 / T-03-01)
 .env
 .env.*
+*.env*
 *.key
 secrets.*
+# ...but DO commit the non-secret template (placeholder values only)
+!.env.template
+
+# Python build / runtime artifacts
+__pycache__/
+*.pyc
+.venv/
