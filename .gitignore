@@ -22,3 +22,7 @@ secrets.*
 __pycache__/
 *.pyc
 .venv/
+
+# Local Airflow runtime home — metadata DB + logs created by `make load-bq`
+# (`airflow dags test`). Never committed; regenerated on demand via `airflow db migrate`.
+.airflow/

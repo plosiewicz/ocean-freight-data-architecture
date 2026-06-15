@@ -21,6 +21,9 @@ from __future__ import annotations
 import os
 import pathlib
 import re
+import subprocess
+import sys
+import textwrap
 
 import pytest
 
@@ -133,3 +136,56 @@ def test_stage_conform_reuses_land_silver(dag) -> None:
     """stage_conform reuses the Phase-4 transform (D-03), not a rewrite."""
     src = DAG_FILE.read_text(encoding="utf-8")
     assert "land_silver" in src, "stage_conform must reuse silver.land_silver (D-03)"
+
+
+def test_dag_bootstraps_repo_root_on_sys_path(dag) -> None:
+    """The DAG must insert the repo root onto sys.path AT PARSE TIME (source guard).
+
+    Without this, Airflow `dags test` runs each task in a subprocess whose sys.path
+    excludes the repo root, so `from silver import land_silver` inside the task
+    callable raises ModuleNotFoundError even though the offline DagBag parse passed.
+    """
+    src = DAG_FILE.read_text(encoding="utf-8")
+    assert "sys.path.insert" in src, (
+        "DAG must bootstrap the repo root onto sys.path so task subprocesses can "
+        "import project modules (silver/, lib/, ...) with no install step."
+    )
+
+
+def test_project_modules_importable_after_dag_load_in_clean_subprocess() -> None:
+    """Closes the parse-vs-execute gap: in a CLEAN subprocess (repo root NOT on
+    sys.path, cwd outside the repo), importing the DAG module must make `silver`
+    and `land_silver` importable — proving the parse-time sys.path bootstrap fires
+    exactly as it would inside an Airflow task subprocess. Fully offline.
+    """
+    script = textwrap.dedent(
+        f"""
+        import importlib.util
+        import sys
+
+        dag_file = {str(DAG_FILE)!r}
+        repo_root = {str(DAGS_DIR.parent)!r}
+
+        # Simulate the Airflow task subprocess: repo root absent from sys.path.
+        sys.path[:] = [p for p in sys.path if p not in ("", ".", repo_root)]
+
+        spec = importlib.util.spec_from_file_location("ofa_warehouse_dag", dag_file)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        # If the bootstrap fired, these now resolve without any install / cwd help.
+        from silver import land_silver  # noqa: F401
+        print("OK")
+        """
+    )
+    # Run from a directory OUTSIDE the repo so cwd cannot rescue the import.
+    proc = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd="/tmp",
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0 and "OK" in proc.stdout, (
+        "DAG load in a clean subprocess failed to make 'silver.land_silver' "
+        f"importable (parse-vs-execute gap).\nstdout={proc.stdout}\nstderr={proc.stderr}"
+    )

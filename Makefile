@@ -67,6 +67,13 @@ ddl:
 # stage_conform -> load_staging -> merge/overwrite -> verify. Plain Airflow (D-01),
 # Composer-portable (D-01a). The DAG file itself lands in Plan 03; the target is
 # authored here. `airflow dags test` runs a single creds-backed run, no scheduler.
+#
+# ZERO-INSTALL importability: `airflow dags test` runs each task in a SUBPROCESS
+# whose sys.path excludes the repo root, so the project packages (silver/, lib/, ...)
+# would NOT import. The DAG bootstraps the repo root onto sys.path at parse time
+# (dags/ofa_warehouse_dag.py), so NO `pip install -e .` is required here. Keep this
+# install-free so the target is portable (local + Composer) — tests/test_dag.py
+# guards the bootstrap.
 load-bq:
 	AIRFLOW__CORE__DAGS_FOLDER=$(PWD)/dags AIRFLOW_HOME=$(PWD)/.airflow \
 		airflow dags test $(DAG_ID) $(DAG_DATE)

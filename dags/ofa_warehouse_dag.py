@@ -48,14 +48,32 @@ Local run (creds-backed, no scheduler):
 from __future__ import annotations
 
 import pathlib
+import sys
 
-from airflow.providers.google.cloud.operators.bigquery import (
+# --------------------------------------------------------------------------- #
+# Repo-root sys.path bootstrap (PARSE-TIME, runs in BOTH the parse and the task
+# subprocess re-import). Airflow's `dags test` (and the scheduler) execute each
+# task in a SUBPROCESS that re-imports this DAG module but whose sys.path does
+# NOT include the project repo root — so `from silver import land_silver` inside
+# a task callable would raise ModuleNotFoundError despite an offline DagBag PARSE
+# passing (parse from the repo cwd ≠ execute in a subprocess). Inserting the repo
+# root (the dags/ parent) here, at module top, makes the project packages
+# (silver/, lib/, ingest/, data_gen/, scripts/) importable in ANY runtime with
+# ZERO install step. Portable: no editable install, no Composer-specific API —
+# on Composer the project code ships alongside the DAG under the same parent, so
+# the same bootstrap holds. tests/test_dag.py guards this (closes parse-vs-execute).
+# --------------------------------------------------------------------------- #
+_REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from airflow.providers.google.cloud.operators.bigquery import (  # noqa: E402
     BigQueryInsertJobOperator,
 )
-from airflow.providers.google.cloud.transfers.gcs_to_bigquery import (
+from airflow.providers.google.cloud.transfers.gcs_to_bigquery import (  # noqa: E402
     GCSToBigQueryOperator,
 )
-from airflow.sdk import dag, task
+from airflow.sdk import dag, task  # noqa: E402
 
 # --------------------------------------------------------------------------- #
 # Constants (no managed-runtime config; plain Airflow + Google provider only).
@@ -65,7 +83,7 @@ DATASET = "ofa_star"
 BUCKET = "data-architecture-msds683-bronze"
 LOCATION = "US"  # match the US Bronze/Silver bucket + ofa_star dataset (D-04a).
 
-_SQL_DIR = pathlib.Path(__file__).resolve().parent.parent / "sql"
+_SQL_DIR = _REPO_ROOT / "sql"
 
 
 def _read_sql(name: str) -> str:
