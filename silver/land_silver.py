@@ -78,6 +78,11 @@ DIM_KEYS: dict[str, str] = {
     "dim_vessel": "silver/dim_vessel/dim_vessel.parquet",
     "dim_carrier": "silver/dim_carrier/dim_carrier.parquet",
     "dim_lane": "silver/dim_lane/dim_lane.parquet",
+    # operated_by (vessel->carrier) bridge — a SNAPSHOT (no dt=), landed alongside
+    # the dims. UC1 carrier attribution's only source (A3 / D-09): AIS has no
+    # operator field, so each resolved vessel IMO is reference-assigned a carrier
+    # SCAC by silver.conform.assign_operated_by (seeded, provenance=synthetic).
+    "operated_by": "silver/operated_by/operated_by.parquet",
 }
 FACT_PREFIXES: dict[str, str] = {
     "fact_port_call": "silver/fact_port_call",
@@ -305,6 +310,11 @@ def build_silver(bucket: str) -> dict:
     )
     dim_carrier = conform.conform_dim_carrier(run_date=run_date)
 
+    # operated_by bridge (A3 / D-09): assign each resolved vessel IMO a carrier
+    # SCAC. Iterate the IMOs in the SAME sorted order as the dim_vessel snapshot so
+    # the assignment is byte-stable and aligns 1:1 with the landed vessel dim.
+    operated_by = conform.assign_operated_by(sorted(set(mapping.values())))
+
     # 4. Derive both real facts (positions-only, D-02; per-fact dt= key, Pitfall 4).
     schedules = _read_synthetic_schedules(bucket)
     fact_port_call = derive.derive_fact_port_calls(calls, centroids)
@@ -316,6 +326,7 @@ def build_silver(bucket: str) -> dict:
             "dim_vessel": dim_vessel,
             "dim_carrier": dim_carrier,
             "dim_lane": dim_lane,
+            "operated_by": operated_by,
         },
         "facts": {
             "fact_port_call": fact_port_call,
@@ -416,7 +427,7 @@ def main(argv: list[str] | None = None) -> int:
         tmp_path = Path(tmp)
 
         if args.step in ("conform", "all"):
-            for name in ("dim_carrier", "dim_lane", "dim_port", "dim_vessel"):
+            for name in ("dim_carrier", "dim_lane", "dim_port", "dim_vessel", "operated_by"):
                 if _land_dim(bucket, name, built["dims"][name], tmp_path):
                     landed += 1
                 else:
