@@ -131,13 +131,33 @@ def _record_dt(record: dict, date_field: str, *, source: str) -> str:
     )
 
 
+def _normalize_imo(raw):
+    """Strip the Bronze AIS ``IMO`` prefix to a bare 7-digit IMO (or None).
+
+    MarineCadastre 2024 AIS encodes the static IMO as ``"IMO9840879"`` (an ``IMO``
+    prefix + the 7 digits), and empty fixes as ``""``. ``silver.imo.valid_imo`` /
+    ``silver.identity`` correctly require a BARE 7-digit IMO natural key (D-04), so
+    the prefix must be removed at the read boundary — keeping the pure transforms
+    encoding-agnostic. Returns the bare digit string, or None for empty/missing.
+    """
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    if s.upper().startswith("IMO"):
+        s = s[3:].strip()
+    return s or None
+
+
 def read_ais_fixes(bucket: str) -> tuple[list[tuple], list[tuple]]:
     """Read column-projected Bronze AIS -> identity rows + position fixes.
 
     Returns ``(identity_rows, position_fixes)`` where ``identity_rows`` are
-    ``(mmsi, imo_or_none, ts)`` for ``resolve_mmsi_to_imo`` and ``position_fixes``
-    are ``(mmsi, wkb_or_none, ts)`` to be rekeyed by RESOLVED IMO before the
-    geofence state machine. Reads every ``ais/dt=*/*.parquet`` object once.
+    ``(mmsi, imo_or_none, ts)`` for ``resolve_mmsi_to_imo`` (with the Bronze ``IMO``
+    prefix stripped to a bare 7-digit natural key, D-04) and ``position_fixes`` are
+    ``(mmsi, wkb_or_none, ts)`` to be rekeyed by RESOLVED IMO before the geofence
+    state machine. Reads every ``ais/dt=*/*.parquet`` object once.
     """
     client = lib.gcs.get_client()
     gbucket = client.bucket(bucket)
@@ -159,7 +179,7 @@ def read_ais_fixes(bucket: str) -> tuple[list[tuple], list[tuple]]:
         ts = table.column("base_date_time").to_pylist()
         geom = table.column("geometry").to_pylist()
         for m, i, t, g in zip(mmsis, imos, ts, geom):
-            identity_rows.append((m, i, t))
+            identity_rows.append((m, _normalize_imo(i), t))
             position_fixes.append((m, g, t))
     return identity_rows, position_fixes
 
