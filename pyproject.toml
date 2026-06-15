@@ -28,13 +28,29 @@ dependencies = [
     # share one numpy major to get byte-identical default_rng draws; the locally
     # verified + frozen version is 1.26.4. KEEP THIS PIN (do not bump to 2.x).
     "numpy==1.26.4",
-    # --- Pinned support libraries (exact for reproducible Bronze landing) ---
-    "pyarrow==16.1.0",
-    "google-cloud-storage==3.10.1",
-    "pandas==2.3.3",
-    "requests==2.32.3",
+    # --- Support libraries ---
+    # NOTE (Phase 5 / 05-02): adding apache-airflow[google]==3.0.6 forces installation
+    # via the Airflow constraints file (constraints-3.0.6/constraints-3.12.txt), the only
+    # supported reproducible Airflow install path (~600 transitive deps). The constraints
+    # set pins pyarrow / pandas / google-cloud-storage, so these are relaxed to >= ranges
+    # that the constraints resolve (pyarrow 18.1.0, pandas 2.1.4, google-cloud-storage 2.19.0
+    # as of 2026-06-15). The Faker==/numpy== EXACT determinism anchors above are UNAFFECTED
+    # by the constraints (both held) and MUST stay exact — they alone anchor synthetic.sha256.
+    "pyarrow>=16.1.0",
+    "google-cloud-storage>=2.19.0",
+    "pandas>=2.1.4",
+    "requests>=2.32.3",
     # shapely: latest acceptable (optional WKB decode for AIS bbox filtering)
     "shapely",
+    # --- Phase 5: warehouse orchestration + BigQuery load (D-01 plain Airflow) ---
+    # Plain Apache Airflow 3.0 (NOT Cloud Composer, D-01) — Composer-portable
+    # standard operators only (D-01a). Installed via the Airflow constraints file;
+    # see the install note below. The Google provider is pulled by the [google]
+    # extra and pinned exactly to the constraints-resolved version (Pitfall 7 / A2).
+    "apache-airflow[google]==3.0.6",
+    "apache-airflow-providers-google==17.1.0",  # constraints-3.0.6 resolved pin (A2)
+    "google-cloud-bigquery",
+    "db-dtypes",
 ]
 
 [project.optional-dependencies]
