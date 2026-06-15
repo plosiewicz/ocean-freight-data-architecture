@@ -510,16 +510,22 @@ def gate_silver_voyage_legs() -> bool:
         f"({zero_distance} zero-distance same-port leg(s) — CR-01: same-port pairs are "
         f"excluded, so this should be 0)"
     )
-    # WR-01: schedule_delta is a structurally dead join for the US-only real AIS
-    # slice (LANES are US<->foreign; every real leg is US->US, so no proforma lane
-    # ever matches). Surface this honestly rather than silently shipping an
-    # all-None column — the column stays in the fact grain for when synthetic
-    # intra-US proforma exists.
-    print(
-        f"[CITE] Silver voyage legs: schedule_delta populated {sched_populated}/{total} "
-        f"— schedule reliability is NOT answerable from the US-only real AIS slice "
-        f"(LANES are US<->foreign; real legs are US->US; WR-01)"
-    )
+    # WR-01 (RESOLVED in Plan 05-01 / D-02): real AIS legs are US->US, and US->US
+    # proforma lanes are now emitted via the non-conditioner path (data_gen.network
+    # US_US_LANES), so schedule_delta = actual - scheduled now MATCHES real US->US
+    # legs. Report the live coverage; if a slice ever has zero matched lanes the
+    # message degrades honestly to the historical WR-01 caveat.
+    if sched_populated > 0:
+        print(
+            f"[CITE] Silver voyage legs: schedule_delta populated {sched_populated}/{total} "
+            f"— schedule reliability IS answerable; US->US proforma lanes match the real "
+            f"US->US AIS legs (D-02 / Pitfall 1 resolved)"
+        )
+    else:
+        print(
+            f"[CITE] Silver voyage legs: schedule_delta populated {sched_populated}/{total} "
+            f"— no proforma lane matched the real legs in this slice (WR-01)"
+        )
     _ok("silver_voyage_legs gate: leg count + schedule_delta coverage reported")
     return True
 
