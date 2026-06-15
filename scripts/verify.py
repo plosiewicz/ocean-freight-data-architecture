@@ -65,6 +65,11 @@ GATES: tuple[str, ...] = (
     "silver_identity_dq",
     "silver_provenance",
     "silver_idempotency",
+    "bq_fact_loaded",
+    "bq_partition_cluster",
+    "bq_idempotency",
+    "uc1_nonnull",
+    "uc2_trend",
 )
 
 # Bronze exit codes (UNCHANGED — 0..4).
@@ -81,6 +86,16 @@ EXIT_SILVER_VOYAGE_LEGS: int = 7
 EXIT_SILVER_IDENTITY_DQ: int = 8
 EXIT_SILVER_PROVENANCE: int = 9
 EXIT_SILVER_IDEMPOTENCY_DRIFT: int = 10
+
+# BigQuery exit codes (NEW — distinct, continuing the sequence 11..15). The five BQ
+# gates run AFTER the Silver gates (fail-fast, cheapest-first) and prove the loaded
+# star end-to-end: fact loaded -> partitioned/clustered -> idempotent re-run -> UC1
+# non-null -> UC2 trend. Bronze 0..4 / Silver 5..10 stay UNCHANGED.
+EXIT_BQ_FACT_NOT_LOADED: int = 11
+EXIT_BQ_IDEMPOTENCY_DRIFT: int = 12
+EXIT_BQ_PARTITION_CLUSTER: int = 13
+EXIT_UC1_NO_ROWS: int = 14
+EXIT_UC2_NO_TREND: int = 15
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SHA256_FILE = REPO_ROOT / "synthetic.sha256"
@@ -107,6 +122,19 @@ SILVER_FACT_VOYAGE_LEG_PREFIX = "silver/fact_voyage_leg/"
 TARGET_PORTS = ("USHOU", "USLAX", "USNYC", "USSAV")
 # Valid provenance values every Silver row must carry (D-11).
 VALID_PROVENANCE = {"real", "synthetic"}
+
+# --- BigQuery tier (exit codes 11..15) ------------------------------------- #
+BQ_PROJECT = "data-architecture-msds683"
+BQ_DATASET = "ofa_star"
+# Versioned UC SQL the gates run (Task 1, D-05) — read from disk, run as-is (T-05-11:
+# static .sql, no user input -> no injection surface).
+UC1_SQL = REPO_ROOT / "sql" / "uc1_eta_reliability.sql"
+UC2_SQL = REPO_ROOT / "sql" / "uc2_dwell_trend.sql"
+# The fact tables whose row counts the idempotency gate snapshots / re-counts.
+BQ_FACT_TABLES = ("fact_voyage_leg", "fact_port_call")
+# Expected physical layout for the WH-01 partition/cluster gate (mirrors ddl_star.sql).
+BQ_PARTITION_COL = "dt"
+BQ_CLUSTER_KEYS = ("origin_unlocode", "dest_unlocode", "vessel_imo")
 
 
 def _ok(label: str, detail: str = "") -> None:
@@ -638,8 +666,233 @@ def gate_silver_idempotency() -> bool:
     return True
 
 
+# --------------------------------------------------------------------------- #
+# BigQuery gates (exit codes 11..15) — query the loaded ofa_star star schema     #
+# --------------------------------------------------------------------------- #
+def _bq_client():
+    """Lazy-import the BigQuery client (mirrors _silver_client_bucket; T-05-14 ADC).
+
+    Returns a ``google.cloud.bigquery.Client`` or ``None`` on an import/connect
+    failure (the caller fails the gate gracefully — no uncaught traceback, T-04-16).
+    Auth is Application Default Credentials only — no key file, no committed secret.
+    """
+    try:
+        from google.cloud import bigquery
+    except Exception as exc:  # noqa: BLE001
+        _fail("bq: google-cloud-bigquery unavailable", str(exc))
+        return None
+    try:
+        return bigquery.Client(project=BQ_PROJECT)
+    except Exception as exc:  # noqa: BLE001
+        _fail("bq: BigQuery client init failed (check ADC)", str(exc))
+        return None
+
+
+def _bq_scalar(client, sql: str):
+    """Run a single-value query and return its scalar (or raise on no rows)."""
+    rows = list(client.query(sql).result())
+    return rows[0][0] if rows else None
+
+
+def gate_bq_fact_loaded() -> bool:
+    """fact_voyage_leg row count > 0 in the loaded star (ETL-02).
+
+    PRINTs a ``[CITE]`` count line for the deck. Fails if the table is empty or
+    unreachable (the load never ran / failed).
+    """
+    client = _bq_client()
+    if client is None:
+        return False
+    try:
+        count = _bq_scalar(
+            client,
+            f"SELECT COUNT(*) FROM `{BQ_PROJECT}.{BQ_DATASET}.fact_voyage_leg`",
+        )
+    except Exception as exc:  # noqa: BLE001
+        _fail("bq_fact_loaded: count query failed", str(exc))
+        return False
+    if not count or count <= 0:
+        _fail(
+            "bq_fact_loaded: fact_voyage_leg is empty",
+            "run `make load-bq` (the warehouse DAG) to populate the star (ETL-02)",
+        )
+        return False
+    print(
+        f"[CITE] BQ fact loaded: {count:,} fact_voyage_leg rows in "
+        f"{BQ_DATASET}.fact_voyage_leg (ETL-02)"
+    )
+    _ok("bq_fact_loaded gate: fact_voyage_leg is non-empty in the loaded star")
+    return True
+
+
+def gate_bq_partition_cluster() -> bool:
+    """Assert fact_voyage_leg is PARTITIONED on dt + CLUSTERED on the chosen FKs (WH-01).
+
+    Reads the table DDL from INFORMATION_SCHEMA.TABLES (the authoritative physical-layout
+    source) and asserts ``PARTITION BY dt`` plus a ``CLUSTER BY`` carrying the expected
+    cluster keys. PRINTs a ``[CITE]`` metadata line so the deck cites partition+cluster
+    from metadata, not a claim.
+    """
+    client = _bq_client()
+    if client is None:
+        return False
+    try:
+        ddl = _bq_scalar(
+            client,
+            f"SELECT ddl FROM `{BQ_PROJECT}.{BQ_DATASET}.INFORMATION_SCHEMA.TABLES` "
+            "WHERE table_name = 'fact_voyage_leg'",
+        )
+    except Exception as exc:  # noqa: BLE001
+        _fail("bq_partition_cluster: INFORMATION_SCHEMA query failed", str(exc))
+        return False
+    if not ddl:
+        _fail("bq_partition_cluster: no DDL for fact_voyage_leg", "table missing — run `make ddl`")
+        return False
+
+    ddl_norm = " ".join(ddl.split())  # collapse newlines/indentation for matching
+    partitioned = f"PARTITION BY {BQ_PARTITION_COL}" in ddl_norm
+    clustered = "CLUSTER BY" in ddl_norm and all(k in ddl_norm for k in BQ_CLUSTER_KEYS)
+    if not partitioned:
+        _fail("bq_partition_cluster: not partitioned on dt", f"DDL: {ddl_norm[:200]}")
+        return False
+    if not clustered:
+        _fail(
+            "bq_partition_cluster: missing expected cluster keys",
+            f"expected CLUSTER BY {BQ_CLUSTER_KEYS}; DDL: {ddl_norm[:200]}",
+        )
+        return False
+
+    print(
+        f"[CITE] BQ physical layout: fact_voyage_leg PARTITION BY {BQ_PARTITION_COL} "
+        f"+ CLUSTER BY {', '.join(BQ_CLUSTER_KEYS)} (from INFORMATION_SCHEMA DDL) (WH-01)"
+    )
+    _ok("bq_partition_cluster gate: partition-on-dt + clustering confirmed from metadata")
+    return True
+
+
+def gate_bq_idempotency() -> bool:
+    """Snapshot fact COUNT(*), re-run the BQ load leg, re-count, assert equal (ETL-04).
+
+    Proves the re-run claim instead of asserting it (T-05-12): snapshots each fact's
+    row count, re-runs ``make load-bq`` (the warehouse DAG) via subprocess (mirror the
+    gate_silver_idempotency subprocess pattern), re-counts, and asserts every fact's
+    count is unchanged. PRINTs a ``[CITE]`` "re-run row counts unchanged" line.
+    """
+    client = _bq_client()
+    if client is None:
+        return False
+
+    def _counts() -> dict[str, int] | None:
+        out: dict[str, int] = {}
+        for tbl in BQ_FACT_TABLES:
+            try:
+                out[tbl] = int(
+                    _bq_scalar(client, f"SELECT COUNT(*) FROM `{BQ_PROJECT}.{BQ_DATASET}.{tbl}`")
+                )
+            except Exception as exc:  # noqa: BLE001
+                _fail("bq_idempotency: count query failed", f"{tbl}: {exc}")
+                return None
+        return out
+
+    before = _counts()
+    if before is None:
+        return False
+
+    # Re-run the BQ load leg (the warehouse DAG). `make load-bq` runs `airflow dags
+    # test` — a single creds-backed run, partition-overwrite facts + MERGE dims (D-04b).
+    result = subprocess.run(
+        ["make", "load-bq"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        tail = result.stderr.splitlines()[-1] if result.stderr else "no stderr"
+        _fail("bq_idempotency: `make load-bq` re-run failed", tail)
+        return False
+
+    after = _counts()
+    if after is None:
+        return False
+
+    drifted = {t: (before[t], after[t]) for t in BQ_FACT_TABLES if before[t] != after[t]}
+    if drifted:
+        _fail(
+            "bq_idempotency drift",
+            f"re-run changed fact row counts {drifted} — overwrite/MERGE not idempotent (ETL-04)",
+        )
+        return False
+
+    detail = ", ".join(f"{t}={before[t]:,}" for t in BQ_FACT_TABLES)
+    print(
+        f"[CITE] BQ idempotency: re-run row counts unchanged ({detail}) — "
+        f"partition-overwrite facts + MERGE dims are idempotent (ETL-04 proven)"
+    )
+    _ok("bq_idempotency gate: BQ load re-run left fact row counts unchanged")
+    return True
+
+
+def gate_uc1_nonnull() -> bool:
+    """Run sql/uc1_eta_reliability.sql; assert >=1 row with non-NULL avg_delay_hours (WH-02)."""
+    client = _bq_client()
+    if client is None:
+        return False
+    if not UC1_SQL.exists():
+        _fail("uc1_nonnull: UC1 SQL missing", f"expected {UC1_SQL}")
+        return False
+    sql = UC1_SQL.read_text(encoding="utf-8")
+    try:
+        rows = list(client.query(sql).result())
+    except Exception as exc:  # noqa: BLE001
+        _fail("uc1_nonnull: UC1 query failed", str(exc))
+        return False
+    nonnull = [r for r in rows if r["avg_delay_hours"] is not None]
+    if not nonnull:
+        _fail(
+            "uc1_nonnull: UC1 returned no rows with a non-NULL avg_delay_hours",
+            "schedule_delta is dead for this slice — check D-02 US->US proforma lanes (WH-02)",
+        )
+        return False
+    print(
+        f"[CITE] UC1 ETA reliability: {len(nonnull)} carrier/lane group(s) with non-NULL "
+        f"avg_delay_hours (schedule reliability IS answerable, WH-02)"
+    )
+    _ok("uc1_nonnull gate: UC1 returns non-NULL schedule-reliability rows")
+    return True
+
+
+def gate_uc2_trend() -> bool:
+    """Run sql/uc2_dwell_trend.sql; assert it spans >=2 distinct call_date values (WH-03)."""
+    client = _bq_client()
+    if client is None:
+        return False
+    if not UC2_SQL.exists():
+        _fail("uc2_trend: UC2 SQL missing", f"expected {UC2_SQL}")
+        return False
+    sql = UC2_SQL.read_text(encoding="utf-8")
+    try:
+        rows = list(client.query(sql).result())
+    except Exception as exc:  # noqa: BLE001
+        _fail("uc2_trend: UC2 query failed", str(exc))
+        return False
+    distinct_dates = {r["call_date"] for r in rows}
+    if len(distinct_dates) < 2:
+        _fail(
+            "uc2_trend: fewer than 2 distinct call_date values",
+            f"got {len(distinct_dates)} date(s) — widen the AIS window (D-02a) for a trend (WH-03)",
+        )
+        return False
+    print(
+        f"[CITE] UC2 dwell trend: {len(rows)} port-day row(s) spanning {len(distinct_dates)} "
+        f"distinct call_date(s) — turnaround/dwell trend IS answerable (WH-03)"
+    )
+    _ok("uc2_trend gate: UC2 returns a dwell trend across >=2 dates")
+    return True
+
+
 def main() -> int:
-    print(f"[INFO] Bronze+Silver ship-gate — running gates: {', '.join(GATES)}")
+    print(f"[INFO] Bronze+Silver+BQ ship-gate — running gates: {', '.join(GATES)}")
 
     if not gate_sha256():
         return EXIT_SHA_MISMATCH
@@ -664,7 +917,26 @@ def main() -> int:
     if not gate_silver_idempotency():
         return EXIT_SILVER_IDEMPOTENCY_DRIFT
 
-    _ok("all gates", "Bronze + Silver pipeline verified (criteria 1, 2, 3, 4 proven)")
+    # --- BQ gates (11..15) — run AFTER the Silver gates, fail-fast, cheapest-first.
+    # Order: fact-loaded -> partition/cluster (metadata) -> idempotency (re-run load)
+    # -> UC1 -> UC2. The idempotency gate is the most expensive (re-runs the DAG).
+    if not gate_bq_fact_loaded():
+        return EXIT_BQ_FACT_NOT_LOADED
+    if not gate_bq_partition_cluster():
+        return EXIT_BQ_PARTITION_CLUSTER
+    if not gate_bq_idempotency():
+        return EXIT_BQ_IDEMPOTENCY_DRIFT
+    if not gate_uc1_nonnull():
+        return EXIT_UC1_NO_ROWS
+    if not gate_uc2_trend():
+        return EXIT_UC2_NO_TREND
+
+    _ok(
+        "all gates",
+        "Bronze + Silver + BQ slice verified end-to-end: fact loaded, "
+        "partitioned+clustered, idempotent re-run, UC1 non-null, UC2 trend "
+        "(criteria 1-4 + WH-01/02/03 + ETL-02/04 proven)",
+    )
     return EXIT_OK
 
 
