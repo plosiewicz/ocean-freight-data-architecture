@@ -28,6 +28,12 @@ def valid_imo(imo) -> bool:
     s = str(imo).strip()
     if not (s.isdigit() and len(s) == 7):
         return False
+    # WR-06: the all-zero IMO ``0000000`` passes the check-digit arithmetic
+    # (0*7+...+0 = 0, units 0 == digit[6] 0) but is a zero-padding sentinel, not a
+    # real vessel natural key. Reject it explicitly so an ``IMO0000000`` static
+    # message is never admitted as a vessel (D-06 input-validation gate).
+    if s == "0000000":
+        return False
     digits = [int(c) for c in s]
     weighted = sum(d * w for d, w in zip(digits[:6], (7, 6, 5, 4, 3, 2)))
     return weighted % 10 == digits[6]

@@ -39,3 +39,13 @@ def test_non_seven_digit_and_garbage_rejected_without_raising() -> None:
     assert valid_imo("ABCDEFG") is False    # non-numeric, 7 chars
     assert valid_imo(None) is False         # must not raise
     assert valid_imo("") is False           # empty
+
+
+def test_all_zero_imo_rejected() -> None:
+    """The all-zero sentinel 0000000 is rejected despite passing the check-digit (WR-06).
+
+    0*7 + 0*6 + ... + 0*2 = 0, units digit 0 == digit[6] 0, so the raw arithmetic
+    accepts it — but it is a zero-padding sentinel, not a real vessel IMO.
+    """
+    assert valid_imo("0000000") is False
+    assert valid_imo(0) is False  # coerces to "0", too short anyway, but be explicit
