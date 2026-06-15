@@ -43,6 +43,17 @@ LANES: tuple[tuple[str, str], ...] = tuple(
     + [(fp, us) for us in US_PORTS for fp in FOREIGN_PORTS]
 )
 
+# All directed US->US lanes (origin != dest). These are a SEPARATE proforma path
+# (D-02): the international LSCI x LSCI x Comtrade conditioner zero-weights US->US
+# pairs (comtrade_od[(USA, USA)] = 0.0 -> lane_weight 0.0 -> filtered out of the
+# conditioned LANES, RESEARCH A4 / Pitfall 1). The real AIS slice is US-only, so
+# every real voyage leg is US->US; a US->US proforma row is what lets
+# schedule_delta = actual - scheduled populate. Emitted in fixed (US_PORTS x
+# US_PORTS) order for byte-determinism; never folded into the conditioned LANES.
+US_US_LANES: tuple[tuple[str, str], ...] = tuple(
+    (o, d) for o in US_PORTS for d in US_PORTS if o != d
+)
+
 # Carrier SCAC codes (4-letter, deterministic set — real liner carriers).
 CARRIER_SCACS: tuple[str, ...] = ("MAEU", "MSCU", "CMDU", "HLCU", "COSU", "ONEY", "EGLV", "HMMU")
 

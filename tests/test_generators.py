@@ -20,7 +20,7 @@ import pathlib
 
 import pytest
 
-from data_gen import bookings, conditioning, container_events, schedules
+from data_gen import bookings, conditioning, container_events, network, schedules
 
 DATA_GEN_DIR = pathlib.Path(__file__).resolve().parent.parent / "data_gen"
 
@@ -87,11 +87,56 @@ def test_schedules_deterministic(cond: conditioning.Conditioner) -> None:
     b = schedules.generate(seed=99, cond=cond)
     assert _jsonl_bytes(a) == _jsonl_bytes(b), "schedules must be byte-identical on re-run"
     assert len(a) >= 1
+    # Conformed-key set: the conditioner's mapped ports PLUS the US ports, since
+    # US->US proforma rows (D-02) are emitted via a non-conditioner path and so
+    # carry US UN/LOCODEs that need not appear in the fixture's port_country.
+    conformed = set(cond.port_country) | set(network.US_PORTS)
     for row in a:
         assert row["provenance"] == "synthetic"
-        assert row["origin_unlocode"] in cond.port_country
-        assert row["dest_unlocode"] in cond.port_country
+        assert row["origin_unlocode"] in conformed
+        assert row["dest_unlocode"] in conformed
         assert isinstance(row["service_frequency"], int) and row["service_frequency"] >= 1
+
+
+def test_schedules_us_us_lane_present(cond: conditioning.Conditioner) -> None:
+    """A US->US proforma row is emitted via the non-conditioner path (D-02).
+
+    The international LSCI x Comtrade conditioner zero-weights US->US pairs
+    (RESEARCH A4 / Pitfall 1), so US->US proforma rows must appear regardless of
+    the conditioner — even with a fixture whose port_country has only one US port.
+    """
+    rows = schedules.generate(seed=99, cond=cond)
+    us_us = [
+        r
+        for r in rows
+        if r["origin_unlocode"] in network.US_PORTS
+        and r["dest_unlocode"] in network.US_PORTS
+        and r["origin_unlocode"] != r["dest_unlocode"]
+    ]
+    assert us_us, "at least one US->US proforma row must be emitted (D-02)"
+    # One row per directed US->US pair (origin != dest).
+    expected_pairs = {
+        (o, d) for o in network.US_PORTS for d in network.US_PORTS if o != d
+    }
+    got_pairs = {(r["origin_unlocode"], r["dest_unlocode"]) for r in us_us}
+    assert got_pairs == expected_pairs, "every directed US->US pair must be present"
+    for r in us_us:
+        assert r["provenance"] == "synthetic"
+        assert r["carrier_scac"] in network.CARRIER_SCACS
+        assert isinstance(r["service_frequency"], int)
+        assert r["service_frequency"] >= schedules.MIN_SERVICE_FREQUENCY
+
+
+def test_schedules_byte_identical_with_us_us(cond: conditioning.Conditioner) -> None:
+    """schedules.generate is byte-identical across two calls WITH US->US rows present."""
+    a = schedules.generate(seed=99, cond=cond)
+    b = schedules.generate(seed=99, cond=cond)
+    assert _jsonl_bytes(a) == _jsonl_bytes(b), "schedules must be byte-identical on re-run"
+    # The US->US rows are part of the deterministic output.
+    assert any(
+        r["origin_unlocode"] in network.US_PORTS and r["dest_unlocode"] in network.US_PORTS
+        for r in a
+    )
 
 
 def test_no_wallclock_no_uuid() -> None:
