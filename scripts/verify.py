@@ -49,6 +49,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -132,9 +133,22 @@ UC1_SQL = REPO_ROOT / "sql" / "uc1_eta_reliability.sql"
 UC2_SQL = REPO_ROOT / "sql" / "uc2_dwell_trend.sql"
 # The fact tables whose row counts the idempotency gate snapshots / re-counts.
 BQ_FACT_TABLES = ("fact_voyage_leg", "fact_port_call")
+# WR-05: the dim tables whose row counts the idempotency gate also snapshots / re-counts.
+# dim_vessel/dim_carrier are now the MERGE targets (CR-02/CR-03), so the "MERGE dims are
+# idempotent" claim must be MEASURED, not asserted — a MERGE that doubled dim_vessel on
+# every run would otherwise pass a facts-only idempotency gate. dim_port/dim_lane +
+# operated_by are WRITE_TRUNCATE snapshots; including them widens the idempotency proof.
+BQ_DIM_TABLES = ("dim_vessel", "dim_carrier", "dim_port", "dim_lane", "operated_by")
+# Every served table the idempotency gate proves stable across a re-run (facts + dims).
+BQ_IDEMPOTENCY_TABLES = BQ_FACT_TABLES + BQ_DIM_TABLES
 # Expected physical layout for the WH-01 partition/cluster gate (mirrors ddl_star.sql).
+# WR-04: BOTH facts are partitioned on dt + clustered; assert each with its own keys
+# (the gate previously checked only fact_voyage_leg, a verification blind spot).
 BQ_PARTITION_COL = "dt"
-BQ_CLUSTER_KEYS = ("origin_unlocode", "dest_unlocode", "vessel_imo")
+BQ_EXPECTED_CLUSTER_KEYS = {
+    "fact_voyage_leg": ("origin_unlocode", "dest_unlocode", "vessel_imo"),
+    "fact_port_call": ("unlocode", "vessel_imo"),
+}
 
 
 def _ok(label: str, detail: str = "") -> None:
@@ -145,6 +159,28 @@ def _ok(label: str, detail: str = "") -> None:
 def _fail(label: str, hint: str) -> None:
     print(f"[FAIL] {label}", file=sys.stderr)
     print(f"  hint: {hint}", file=sys.stderr)
+
+
+# WR-06: parse the loader's landed count ROBUSTLY rather than scraping prose with a
+# brittle ``split("complete:")[1].split("landed")[0]`` (which a benign log reword
+# silently breaks into a false negative, or worse mis-parses a number elsewhere into a
+# false pass). Match a ``complete: <N> landed`` summary anywhere in the loader stdout
+# with a tolerant regex (any whitespace, optional thousands separators between the
+# keyword and the integer). Returns the int landed count or None when no summary line
+# is present. The loader summary wording can drift without breaking the gate as long as
+# it still contains "complete:" ... "<number>" ... "landed".
+_LANDED_RE = re.compile(r"complete:\s*([\d,]+)\s+landed", re.IGNORECASE)
+
+
+def _parse_landed_count(stdout: str) -> int | None:
+    """Extract the landed object count from a loader's stdout (WR-06: robust)."""
+    match = _LANDED_RE.search(stdout)
+    if match is None:
+        return None
+    try:
+        return int(match.group(1).replace(",", ""))
+    except ValueError:
+        return None
 
 
 # --------------------------------------------------------------------------- #
@@ -299,16 +335,8 @@ def gate_idempotency() -> bool:
         _fail("idempotency: load_bronze re-run failed", tail)
         return False
 
-    # Find the summary line: "... complete: N landed, M skipped ..."
-    landed = None
-    for line in result.stdout.splitlines():
-        if "load-bronze complete:" in line:
-            try:
-                landed = int(line.split("complete:")[1].split("landed")[0].strip())
-            except (IndexError, ValueError):
-                landed = None
-            break
-
+    # WR-06: parse the landed count robustly (tolerant regex), not by prose-splitting.
+    landed = _parse_landed_count(result.stdout)
     if landed is None:
         _fail("idempotency: could not parse loader summary", result.stdout.strip()[-200:])
         return False
@@ -646,15 +674,8 @@ def gate_silver_idempotency() -> bool:
         _fail("silver_idempotency: land_silver re-run failed", tail)
         return False
 
-    landed = None
-    for line in result.stdout.splitlines():
-        if "silver complete:" in line:
-            try:
-                landed = int(line.split("complete:")[1].split("landed")[0].strip())
-            except (IndexError, ValueError):
-                landed = None
-            break
-
+    # WR-06: parse the landed count robustly (tolerant regex), not by prose-splitting.
+    landed = _parse_landed_count(result.stdout)
     if landed is None:
         _fail("silver_idempotency: could not parse loader summary", result.stdout.strip()[-200:])
         return False
@@ -726,57 +747,74 @@ def gate_bq_fact_loaded() -> bool:
 
 
 def gate_bq_partition_cluster() -> bool:
-    """Assert fact_voyage_leg is PARTITIONED on dt + CLUSTERED on the chosen FKs (WH-01).
+    """Assert BOTH facts are PARTITIONED on dt + CLUSTERED on their chosen FKs (WH-01).
 
-    Reads the table DDL from INFORMATION_SCHEMA.TABLES (the authoritative physical-layout
-    source) and asserts ``PARTITION BY dt`` plus a ``CLUSTER BY`` carrying the expected
-    cluster keys. PRINTs a ``[CITE]`` metadata line so the deck cites partition+cluster
-    from metadata, not a claim.
+    WR-04: the gate now iterates EVERY fact in BQ_EXPECTED_CLUSTER_KEYS (fact_voyage_leg
+    AND fact_port_call), each with its own expected cluster keys — closing the prior
+    blind spot where only fact_voyage_leg was verified and a mis-configured
+    fact_port_call would keep every gate green. Reads each table DDL from
+    INFORMATION_SCHEMA.TABLES (the authoritative physical-layout source) and asserts
+    ``PARTITION BY dt`` plus a ``CLUSTER BY`` carrying that fact's expected keys. PRINTs
+    a ``[CITE]`` metadata line per fact so the deck cites partition+cluster from
+    metadata, not a claim.
     """
     client = _bq_client()
     if client is None:
         return False
-    try:
-        ddl = _bq_scalar(
-            client,
-            f"SELECT ddl FROM `{BQ_PROJECT}.{BQ_DATASET}.INFORMATION_SCHEMA.TABLES` "
-            "WHERE table_name = 'fact_voyage_leg'",
-        )
-    except Exception as exc:  # noqa: BLE001
-        _fail("bq_partition_cluster: INFORMATION_SCHEMA query failed", str(exc))
-        return False
-    if not ddl:
-        _fail("bq_partition_cluster: no DDL for fact_voyage_leg", "table missing — run `make ddl`")
-        return False
 
-    ddl_norm = " ".join(ddl.split())  # collapse newlines/indentation for matching
-    partitioned = f"PARTITION BY {BQ_PARTITION_COL}" in ddl_norm
-    clustered = "CLUSTER BY" in ddl_norm and all(k in ddl_norm for k in BQ_CLUSTER_KEYS)
-    if not partitioned:
-        _fail("bq_partition_cluster: not partitioned on dt", f"DDL: {ddl_norm[:200]}")
-        return False
-    if not clustered:
-        _fail(
-            "bq_partition_cluster: missing expected cluster keys",
-            f"expected CLUSTER BY {BQ_CLUSTER_KEYS}; DDL: {ddl_norm[:200]}",
-        )
-        return False
+    for table, cluster_keys in BQ_EXPECTED_CLUSTER_KEYS.items():
+        try:
+            ddl = _bq_scalar(
+                client,
+                f"SELECT ddl FROM `{BQ_PROJECT}.{BQ_DATASET}.INFORMATION_SCHEMA.TABLES` "
+                f"WHERE table_name = '{table}'",
+            )
+        except Exception as exc:  # noqa: BLE001
+            _fail("bq_partition_cluster: INFORMATION_SCHEMA query failed", f"{table}: {exc}")
+            return False
+        if not ddl:
+            _fail(f"bq_partition_cluster: no DDL for {table}", "table missing — run `make ddl`")
+            return False
 
-    print(
-        f"[CITE] BQ physical layout: fact_voyage_leg PARTITION BY {BQ_PARTITION_COL} "
-        f"+ CLUSTER BY {', '.join(BQ_CLUSTER_KEYS)} (from INFORMATION_SCHEMA DDL) (WH-01)"
+        ddl_norm = " ".join(ddl.split())  # collapse newlines/indentation for matching
+        partitioned = f"PARTITION BY {BQ_PARTITION_COL}" in ddl_norm
+        clustered = "CLUSTER BY" in ddl_norm and all(k in ddl_norm for k in cluster_keys)
+        if not partitioned:
+            _fail(f"bq_partition_cluster: {table} not partitioned on dt", f"DDL: {ddl_norm[:200]}")
+            return False
+        if not clustered:
+            _fail(
+                f"bq_partition_cluster: {table} missing expected cluster keys",
+                f"expected CLUSTER BY {cluster_keys}; DDL: {ddl_norm[:200]}",
+            )
+            return False
+
+        print(
+            f"[CITE] BQ physical layout: {table} PARTITION BY {BQ_PARTITION_COL} "
+            f"+ CLUSTER BY {', '.join(cluster_keys)} (from INFORMATION_SCHEMA DDL) (WH-01)"
+        )
+
+    _ok(
+        "bq_partition_cluster gate: both facts partition-on-dt + clustering confirmed "
+        "from metadata (fact_voyage_leg + fact_port_call)"
     )
-    _ok("bq_partition_cluster gate: partition-on-dt + clustering confirmed from metadata")
     return True
 
 
 def gate_bq_idempotency() -> bool:
-    """Snapshot fact COUNT(*), re-run the BQ load leg, re-count, assert equal (ETL-04).
+    """Snapshot fact+dim COUNT(*), re-run the BQ load leg, re-count, assert equal (ETL-04).
 
-    Proves the re-run claim instead of asserting it (T-05-12): snapshots each fact's
+    Proves the re-run claim instead of asserting it (T-05-12): snapshots each table's
     row count, re-runs ``make load-bq`` (the warehouse DAG) via subprocess (mirror the
-    gate_silver_idempotency subprocess pattern), re-counts, and asserts every fact's
-    count is unchanged. PRINTs a ``[CITE]`` "re-run row counts unchanged" line.
+    gate_silver_idempotency subprocess pattern), re-counts, and asserts every count is
+    unchanged. PRINTs a ``[CITE]`` "re-run row counts unchanged" line.
+
+    WR-05: the snapshot set is now BQ_IDEMPOTENCY_TABLES (BOTH facts + the dims/bridge),
+    not facts-only. dim_vessel/dim_carrier are the MERGE targets (CR-02/CR-03), so a
+    MERGE that appended a duplicate version on every re-run is now caught here — the
+    "MERGE dims are idempotent" CITE line is finally BACKED by a measurement.
+    WR-06: counts come from a direct COUNT(*) query per table (robust to log wording),
+    never from parsing a free-text loader summary line.
     """
     client = _bq_client()
     if client is None:
@@ -784,7 +822,7 @@ def gate_bq_idempotency() -> bool:
 
     def _counts() -> dict[str, int] | None:
         out: dict[str, int] = {}
-        for tbl in BQ_FACT_TABLES:
+        for tbl in BQ_IDEMPOTENCY_TABLES:
             try:
                 out[tbl] = int(
                     _bq_scalar(client, f"SELECT COUNT(*) FROM `{BQ_PROJECT}.{BQ_DATASET}.{tbl}`")
@@ -799,7 +837,8 @@ def gate_bq_idempotency() -> bool:
         return False
 
     # Re-run the BQ load leg (the warehouse DAG). `make load-bq` runs `airflow dags
-    # test` — a single creds-backed run, partition-overwrite facts + MERGE dims (D-04b).
+    # test` — a single creds-backed run, partition-overwrite facts + SCD1 dims +
+    # staging->MERGE for the SCD2 dims (CR-02/CR-03 / D-04b).
     result = subprocess.run(
         ["make", "load-bq"],
         cwd=REPO_ROOT,
@@ -816,20 +855,27 @@ def gate_bq_idempotency() -> bool:
     if after is None:
         return False
 
-    drifted = {t: (before[t], after[t]) for t in BQ_FACT_TABLES if before[t] != after[t]}
+    drifted = {
+        t: (before[t], after[t]) for t in BQ_IDEMPOTENCY_TABLES if before[t] != after[t]
+    }
     if drifted:
         _fail(
             "bq_idempotency drift",
-            f"re-run changed fact row counts {drifted} — overwrite/MERGE not idempotent (ETL-04)",
+            f"re-run changed row counts {drifted} — overwrite/MERGE not idempotent (ETL-04)",
         )
         return False
 
-    detail = ", ".join(f"{t}={before[t]:,}" for t in BQ_FACT_TABLES)
+    fact_detail = ", ".join(f"{t}={before[t]:,}" for t in BQ_FACT_TABLES)
+    dim_detail = ", ".join(f"{t}={before[t]:,}" for t in BQ_DIM_TABLES)
     print(
-        f"[CITE] BQ idempotency: re-run row counts unchanged ({detail}) — "
-        f"partition-overwrite facts + MERGE dims are idempotent (ETL-04 proven)"
+        f"[CITE] BQ idempotency: re-run row counts unchanged "
+        f"(facts: {fact_detail}; dims: {dim_detail}) — partition-overwrite facts + "
+        f"WRITE_TRUNCATE SCD1 dims + staging->MERGE SCD2 dims are idempotent (ETL-04 proven)"
     )
-    _ok("bq_idempotency gate: BQ load re-run left fact row counts unchanged")
+    _ok(
+        "bq_idempotency gate: BQ load re-run left ALL fact + dim row counts unchanged "
+        "(facts + dims, incl. the MERGE-target SCD2 dims)"
+    )
     return True
 
 

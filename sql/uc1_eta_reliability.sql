@@ -32,8 +32,13 @@ SELECT
   CONCAT(f.origin_unlocode, '-', f.dest_unlocode)               AS lane_key,
   COUNT(*)                                                      AS legs,
   ROUND(AVG(f.schedule_delta), 2)                               AS avg_delay_hours,
+  -- WR-02: a leg is on-time when 0 <= schedule_delta <= 24h. The lower bound (>= 0)
+  -- excludes nonsensically-early deltas produced by a non-positive transit_hours
+  -- (clock skew / mis-ordered calls / MMSI->IMO collisions): those would otherwise
+  -- count as "on time" and drag avg_delay_hours arbitrarily. The WHERE clause below
+  -- already floors the population at transit_hours > 0, so this is belt-and-suspenders.
   ROUND(
-    SAFE_DIVIDE(COUNTIF(f.schedule_delta <= 24), COUNT(*)) * 100, 1
+    SAFE_DIVIDE(COUNTIF(f.schedule_delta BETWEEN 0 AND 24), COUNT(*)) * 100, 1
   )                                                             AS on_time_pct
 FROM `data-architecture-msds683.ofa_star.fact_voyage_leg` AS f
 -- Resolve the operating vessel to its current dim_vessel record (SCD2).
@@ -55,6 +60,11 @@ JOIN `data-architecture-msds683.ofa_star.dim_carrier` AS c
 LEFT JOIN `data-architecture-msds683.ofa_star.dim_lane` AS l
   ON l.lane_key = CONCAT(f.origin_unlocode, '-', f.dest_unlocode)
 -- Only legs whose schedule_delta is populated (a proforma lane matched) are answerable.
+-- WR-02: also exclude inverted/zero-transit legs (transit_hours <= 0) — a leg whose
+-- arrival precedes its departure (mis-ordered calls, overlapping timestamps, or an
+-- MMSI->IMO collision) yields a large-negative schedule_delta that would otherwise be
+-- counted as on-time and skew avg_delay_hours. A real ocean leg has positive transit.
 WHERE f.schedule_delta IS NOT NULL
+  AND f.transit_hours > 0
 GROUP BY carrier_scac, carrier_name, origin_unlocode, dest_unlocode, lane_key
 ORDER BY legs DESC, avg_delay_hours;

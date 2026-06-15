@@ -17,15 +17,22 @@ SELECT
   p.unlocode                                                    AS unlocode,
   f.dt                                                          AS call_date,
   COUNT(*)                                                      AS calls,
+  -- WR-03: compute turnaround in FRACTIONAL hours. TIMESTAMP_DIFF(..., HOUR) truncates
+  -- toward zero (a 1.9-hour turnaround reports 1), systematically understating dwell
+  -- across the average and flooring the max. Diff in SECOND / 3600.0 keeps the trend
+  -- accurate while staying demo-legible (rounded to 2 decimals).
   ROUND(
-    AVG(TIMESTAMP_DIFF(f.departure_ts, f.arrival_ts, HOUR)), 2
+    AVG(TIMESTAMP_DIFF(f.departure_ts, f.arrival_ts, SECOND) / 3600.0), 2
   )                                                             AS avg_turnaround_hours,
   ROUND(
-    MAX(TIMESTAMP_DIFF(f.departure_ts, f.arrival_ts, HOUR)), 2
+    MAX(TIMESTAMP_DIFF(f.departure_ts, f.arrival_ts, SECOND) / 3600.0), 2
   )                                                             AS max_turnaround_hours
 FROM `data-architecture-msds683.ofa_star.fact_port_call` AS f
 -- Join the conformed dim_port so the trend is keyed on the conformed UN/LOCODE.
 JOIN `data-architecture-msds683.ofa_star.dim_port` AS p
   ON p.unlocode = f.unlocode
+-- WR-03: exclude inverted intervals (departure before arrival) — a mis-ordered call
+-- would contribute a negative dwell that silently biases the average/max downward.
+WHERE f.departure_ts >= f.arrival_ts
 GROUP BY unlocode, call_date
 ORDER BY unlocode, call_date;
