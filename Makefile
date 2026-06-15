@@ -9,7 +9,7 @@ BRONZE_BUCKET ?= gs://data-architecture-msds683-bronze
 
 PYTHON ?= python
 
-.PHONY: pull-ais pull-reference pull-priors generate load-bronze verify bronze
+.PHONY: pull-ais pull-reference pull-priors generate load-bronze verify bronze conform derive silver
 
 # --- Source pulls (implementing modules land in Wave 2: 03-02..03-04) ---
 pull-ais:
@@ -35,3 +35,15 @@ verify:
 
 # --- Chained orchestrator: full Bronze pipeline in dependency order ---
 bronze: pull-reference pull-priors pull-ais generate load-bronze verify
+
+# --- Silver: Bronze -> conform + derive -> idempotent silver/ landing (ETL-01) ---
+# conform lands the four dims (snapshots, no dt=); derive lands the two facts
+# (dt= partitioned). Both write-once via upload_if_absent (D-07/D-08).
+conform:
+	$(PYTHON) -m silver.land_silver --bucket $(BRONZE_BUCKET) --step conform
+
+derive:
+	$(PYTHON) -m silver.land_silver --bucket $(BRONZE_BUCKET) --step derive
+
+# --- Chained orchestrator: conform -> derive -> verify (mirrors bronze:) ---
+silver: conform derive verify
