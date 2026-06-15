@@ -131,6 +131,25 @@ def _record_dt(record: dict, date_field: str, *, source: str) -> str:
     )
 
 
+def _is_real_mmsi(mmsi) -> bool:
+    """True iff ``mmsi`` is a real vessel MMSI (not a null/0/empty placeholder).
+
+    WR-06: AIS rows can carry a null, 0, or empty MMSI (non-vessel / malformed
+    records). Such rows must NOT count toward the MMSI universe used for the
+    no-IMO drop denominator (D-06), or the deck-cited drop count is inflated by
+    non-vessel rows. A real MMSI is a non-empty, non-zero numeric identifier.
+    """
+    if mmsi is None:
+        return False
+    s = str(mmsi).strip()
+    if not s:
+        return False
+    # Treat a purely-zero MMSI ("0", "000000000") as a placeholder, not a vessel.
+    if s.lstrip("0") == "":
+        return False
+    return True
+
+
 def _normalize_imo(raw):
     """Strip the Bronze AIS ``IMO`` prefix to a bare 7-digit IMO (or None).
 
@@ -242,7 +261,10 @@ def build_silver(bucket: str) -> dict:
 
     # 1. MMSI->IMO resolution (D-04/D-05/D-06) + first-class DQ counts.
     mapping, collisions = identity.resolve_mmsi_to_imo(identity_rows)
-    all_mmsis = [r[0] for r in identity_rows]
+    # WR-06: build the MMSI universe from REAL vessel MMSIs only. AIS rows with a
+    # null/0/empty MMSI are non-vessel records, not "a MMSI seen in the slice" —
+    # counting them inflates the no-IMO drop count (a deck-cited DQ metric, D-06).
+    all_mmsis = [m for (m, _imo, _ts) in identity_rows if _is_real_mmsi(m)]
     dropped = identity.dropped_mmsi_count(all_mmsis, mapping)
 
     # Rekey position fixes by RESOLVED IMO; drop fixes whose MMSI never resolved (D-06).
@@ -251,8 +273,15 @@ def build_silver(bucket: str) -> dict:
     ]
 
     # Deterministic SCD2 anchor = the slice's max event date (never wall-clock, T-04-07).
+    # WR-04: fail loud on an all-null/unparseable timestamp slice rather than
+    # silently anchoring to a magic date — an AIS slice with zero parseable event
+    # dates is a pipeline error, not a default.
     all_ts = [r[2] for r in identity_rows if r[2] is not None]
-    run_date = max(all_ts).date() if all_ts else dt.date(2024, 1, 7)
+    if not all_ts:
+        raise ValueError(
+            "no parseable base_date_time in AIS slice — cannot anchor run_date (T-04-07)."
+        )
+    run_date = max(all_ts).date()
 
     centroids = port_centroids_from_bboxes()
 

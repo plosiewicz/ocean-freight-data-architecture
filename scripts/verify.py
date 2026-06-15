@@ -494,17 +494,33 @@ def gate_silver_voyage_legs() -> bool:
 
     total = 0
     zero_distance = 0
+    sched_populated = 0
     for blob in blobs:
         table = _read_silver_table(client, bucket, blob)
         total += table.num_rows
         if "distance_nm" in table.column_names:
             zero_distance += sum(1 for d in table.column("distance_nm").to_pylist() if d == 0)
+        if "schedule_delta" in table.column_names:
+            sched_populated += sum(
+                1 for s in table.column("schedule_delta").to_pylist() if s is not None
+            )
 
     print(
         f"[CITE] Silver voyage legs: {total:,} fact_voyage_leg rows "
-        f"({zero_distance} zero-distance same-port leg(s) kept, Pitfall 7)"
+        f"({zero_distance} zero-distance same-port leg(s) — CR-01: same-port pairs are "
+        f"excluded, so this should be 0)"
     )
-    _ok("silver_voyage_legs gate: leg count reported")
+    # WR-01: schedule_delta is a structurally dead join for the US-only real AIS
+    # slice (LANES are US<->foreign; every real leg is US->US, so no proforma lane
+    # ever matches). Surface this honestly rather than silently shipping an
+    # all-None column — the column stays in the fact grain for when synthetic
+    # intra-US proforma exists.
+    print(
+        f"[CITE] Silver voyage legs: schedule_delta populated {sched_populated}/{total} "
+        f"— schedule reliability is NOT answerable from the US-only real AIS slice "
+        f"(LANES are US<->foreign; real legs are US->US; WR-01)"
+    )
+    _ok("silver_voyage_legs gate: leg count + schedule_delta coverage reported")
     return True
 
 
@@ -517,7 +533,7 @@ def gate_silver_identity_dq() -> bool:
     """
     try:
         from silver import identity
-        from silver.land_silver import read_ais_fixes
+        from silver.land_silver import _is_real_mmsi, read_ais_fixes
     except Exception as exc:  # noqa: BLE001
         _fail("silver_identity_dq: silver modules unavailable", str(exc))
         return False
@@ -529,7 +545,9 @@ def gate_silver_identity_dq() -> bool:
         return False
 
     mapping, collisions = identity.resolve_mmsi_to_imo(identity_rows)
-    all_mmsis = [r[0] for r in identity_rows]
+    # WR-06: same real-MMSI denominator as the land step (drop null/0/empty MMSIs
+    # from the universe) so the deck-cited no-IMO drop count is not inflated.
+    all_mmsis = [r[0] for r in identity_rows if _is_real_mmsi(r[0])]
     dropped = identity.dropped_mmsi_count(all_mmsis, mapping)
 
     print(
