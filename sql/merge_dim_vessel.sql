@@ -18,9 +18,16 @@
 --   * effective_to open sentinel = DATE "9999-12-31" (A5 / Pitfall 5) — a DATE, not
 --     NULL, so the column stays a single dtype; current rows are found by is_current.
 --
--- HONESTY NOTE (D-04 / Pitfall 5): the LIVE load path WRITE_TRUNCATEs the authoritative
--- Silver SCD2 snapshot (conform.py computes it deterministically) — this MERGE is the
--- documented/demo artifact of the MERGE pattern the rubric names (D-04 intent).
+-- LOAD TOPOLOGY (CR-02/CR-03 fixed): dim_vessel is now loaded EXCLUSIVELY by this
+-- staging->MERGE path. The DAG WRITE_TRUNCATEs the full Silver SCD2 snapshot into
+-- stg_dim_vessel (load_staging_dim_vessel), then runs this MERGE (merge_dim_vessel)
+-- to upsert staging -> the persistent dim_vessel. The prior WRITE_TRUNCATE-of-dim
+-- "overwrite" task was REMOVED: it raced this MERGE on the same table (CR-03) and
+-- made the MERGE a structural no-op against its own overwritten output (CR-02). With
+-- the overwrite gone, the MERGE is the genuine, idempotent, SCD2-demonstrating load —
+-- a first MERGE into a clean dim INSERTs all current versions; a no-change re-run is
+-- a no-op (NOT-EXISTS guard); a tracked-attr change closes the old row + inserts a
+-- new version with a fresh unique surrogate (Step 2 below).
 --
 -- Run via BigQueryInsertJobOperator(configuration={"query": {... queryParameters:
 --   [{name:"run_date", parameterType:{type:"DATE"}, parameterValue:{value:"{{ ds }}"}}]}}).
@@ -35,10 +42,22 @@ WHEN MATCHED AND t.row_hash != s.row_hash THEN
 -- Step 2: insert new versions for brand-new keys OR changed keys. The NOT EXISTS
 -- guard (any version already carrying this imo+row_hash) makes a no-change re-run a
 -- no-op (idempotent, ETL-04 / Pitfall 5).
+--
+-- CR-02 (surrogate-key collision fix): do NOT carry s.surrogate_key from staging.
+-- conform.assign_surrogate recomputes a dense 1-based surrogate every run by sorting
+-- the CURRENT natural keys, so a new version's staging surrogate would collide with a
+-- closed row's surrogate already in the dim (the surrogate would no longer be unique
+-- per version, breaking any join keyed on it). Instead, generate a FRESH unique
+-- surrogate above the current MAX: MAX(surrogate_key) over the persistent dim +
+-- a dense ROW_NUMBER over the rows actually being inserted (ordered by imo for a
+-- deterministic assignment). This keeps surrogate_key unique across all versions.
 INSERT INTO `data-architecture-msds683.ofa_star.dim_vessel`
   (surrogate_key, imo, vessel_name, effective_from, effective_to, is_current, row_hash, provenance)
 SELECT
-  s.surrogate_key, s.imo, s.vessel_name,
+  (SELECT COALESCE(MAX(surrogate_key), 0)
+     FROM `data-architecture-msds683.ofa_star.dim_vessel`)
+    + ROW_NUMBER() OVER (ORDER BY s.imo)                       AS surrogate_key,
+  s.imo, s.vessel_name,
   @run_date, DATE "9999-12-31", TRUE, s.row_hash, s.provenance
 FROM `data-architecture-msds683.ofa_star.stg_dim_vessel` s
 WHERE NOT EXISTS (

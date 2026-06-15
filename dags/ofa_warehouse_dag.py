@@ -20,12 +20,16 @@ DESIGN (defended):
     Phase 6 adds a parallel `load_arango` downstream of it from the SAME staging
     (the "one transform, two sinks" contract) — so this task must NOT couple to BQ.
   * Idempotent loads (ETL-04 / Pitfall 5):
-      - dims load via WRITE_TRUNCATE of the AUTHORITATIVE Silver SCD2 snapshot
-        (conform.py computes the SCD2 versioning deterministically) -> the live,
-        robustly-idempotent bulk path (D-04 intent / RESEARCH Open Q3).
-      - the SCD2 MERGE SQL (sql/merge_dim_*.sql) is ALSO wired as
-        BigQueryInsertJobOperator tasks (the D-04-named MERGE, for the demo /
-        idempotency narrative) running against staging tables loaded in the same DAG.
+      - SCD2 dims (dim_vessel/dim_carrier) load EXCLUSIVELY via staging -> MERGE
+        (CR-02/CR-03 fix): load_staging_dim_* WRITE_TRUNCATEs the authoritative Silver
+        SCD2 snapshot into stg_dim_* , then merge_dim_* (sql/merge_dim_*.sql) upserts
+        staging -> the persistent dim. The prior WRITE_TRUNCATE-of-dim "overwrite_dim_*"
+        tasks were REMOVED: they raced the MERGE on the same table (CR-03, no ordering
+        edge) and made the MERGE a structural no-op against its own overwritten output
+        (CR-02). With only the MERGE writing the dim, the MERGE is the genuine,
+        idempotent, SCD2-demonstrating load (D-04 named MERGE pattern).
+      - SCD1 dims (dim_port/dim_lane) + the operated_by bridge load via WRITE_TRUNCATE
+        of the authoritative Silver snapshot -> the live, robustly-idempotent bulk path.
       - facts load via WRITE_TRUNCATE into the existing partitioned/clustered native
         tables (sql/ddl_star.sql) -> a re-run replaces the same dt= partitions with
         identical bytes (T-05-08). NEVER streaming inserts (Pitfall 6).
@@ -304,12 +308,13 @@ def ofa_warehouse():
     merge_vessel = _merge_dim("dim_vessel")
     merge_carrier = _merge_dim("dim_carrier")
 
-    # Authoritative overwrite loads (the LIVE idempotent bulk path):
-    #   - SCD2 dims: WRITE_TRUNCATE the Silver SCD2 snapshot (D-04 / Open Q3)
-    #   - SCD1 dims + operated_by bridge: truncate-insert snapshot
+    # Authoritative overwrite loads (the LIVE idempotent bulk path). NOTE (CR-03):
+    # the SCD2 dims (dim_vessel/dim_carrier) are DELIBERATELY ABSENT here — they are
+    # loaded EXCLUSIVELY via staging -> MERGE (stg_* >> merge_*). The prior
+    # overwrite_dim_vessel/overwrite_dim_carrier WRITE_TRUNCATE tasks were removed:
+    # they raced the MERGE on the same table and made the MERGE a no-op (CR-02/CR-03).
+    #   - SCD1 dims + operated_by bridge: WRITE_TRUNCATE snapshot
     #   - facts: WRITE_TRUNCATE per dt= partition
-    ow_vessel = _overwrite_dim("dim_vessel")
-    ow_carrier = _overwrite_dim("dim_carrier")
     ow_port = _overwrite_dim("dim_port")
     ow_lane = _overwrite_dim("dim_lane")
     ow_operated_by = _overwrite_dim("operated_by")
@@ -322,8 +327,6 @@ def ofa_warehouse():
     staged >> [
         stg_vessel,
         stg_carrier,
-        ow_vessel,
-        ow_carrier,
         ow_port,
         ow_lane,
         ow_operated_by,
@@ -331,14 +334,13 @@ def ofa_warehouse():
         ow_port_call,
     ]
 
-    # Each SCD2 MERGE runs after its staging table is loaded (demo artifact).
+    # SCD2 dims load via staging -> MERGE ONLY (the MERGE is the sole writer of the
+    # persistent dim, so there is no shared-table race; CR-02/CR-03 fix).
     stg_vessel >> merge_vessel
     stg_carrier >> merge_carrier
 
     # verify runs last — after every load + merge.
     [
-        ow_vessel,
-        ow_carrier,
         ow_port,
         ow_lane,
         ow_operated_by,

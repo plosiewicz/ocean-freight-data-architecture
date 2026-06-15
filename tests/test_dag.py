@@ -37,8 +37,9 @@ EXPECTED_TASKS = {
     "load_staging_dim_carrier",
     "merge_dim_vessel",
     "merge_dim_carrier",
-    "overwrite_dim_vessel",
-    "overwrite_dim_carrier",
+    # CR-02/CR-03: SCD2 dims load via staging->MERGE ONLY. The prior
+    # overwrite_dim_vessel/overwrite_dim_carrier WRITE_TRUNCATE-of-dim tasks were
+    # removed (they raced the MERGE on the same table + made it a no-op).
     "overwrite_dim_port",
     "overwrite_dim_lane",
     "overwrite_operated_by",
