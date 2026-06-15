@@ -64,6 +64,129 @@ AIS_PREFIX = "ais/"
 # Bronze AIS columns the identity + geofence transforms need (column-projected read).
 AIS_READ_COLUMNS = ["mmsi", "base_date_time", "imo", "geometry"]
 
+# --------------------------------------------------------------------------- #
+# Canonical PyArrow schemas per Silver entity (mirror sql/ddl_star.sql EXACTLY).
+#
+# WHY EXPLICIT (T-05 BQ-load type-mapping bug): pa.Table.from_pandas INFERS column
+# types from the in-memory frame, which silently diverges from the DDL the BigQuery
+# native-Parquet loader validates against:
+#   * schedule_delta is FLOAT64 in the DDL, but when its populated values are all
+#     whole numbers (or the column is all-None, Pitfall 8 on the real US->US slice)
+#     pandas/pyarrow infer INT (Parquet INT32) -> BQ 400 "type INT32 ... FLOAT64".
+#   * transit_hours / distance_nm / lat / lon / surrogate_key carry the same
+#     whole-number->INT inference risk against their DDL FLOAT64 / INT64 types.
+#   * arrival_ts / departure_ts are Python datetimes -> pyarrow infers timestamp[ns],
+#     but BQ TIMESTAMP accepts only MICROSECOND precision -> BQ 400 "Invalid
+#     timestamp nanoseconds value".
+# Pinning an explicit pa.schema (FLOAT64=float64, INT64=int64, TIMESTAMP=us, DATE=
+# date32, BOOL=bool, STRING=string) makes every landed Parquet match the DDL by
+# construction, independent of the values that happen to populate the slice.
+# --------------------------------------------------------------------------- #
+_TS_US = pa.timestamp("us")  # BQ TIMESTAMP = microsecond precision (NOT ns).
+
+SILVER_SCHEMAS: dict[str, pa.Schema] = {
+    # Facts (mirror silver/derive.py row constructors + sql/ddl_star.sql).
+    "fact_voyage_leg": pa.schema([
+        ("vessel_imo", pa.string()),
+        ("origin_unlocode", pa.string()),
+        ("dest_unlocode", pa.string()),
+        ("transit_hours", pa.float64()),
+        ("distance_nm", pa.float64()),
+        ("schedule_delta", pa.float64()),   # NULLABLE FLOAT64 (None-on-unmatched-lane)
+        ("dt", pa.date32()),                # partition key: origin-departure DATE
+        ("provenance", pa.string()),
+    ]),
+    "fact_port_call": pa.schema([
+        ("vessel_imo", pa.string()),
+        ("unlocode", pa.string()),
+        ("arrival_ts", _TS_US),             # TIMESTAMP (us, NOT ns)
+        ("departure_ts", _TS_US),           # TIMESTAMP (us, NOT ns)
+        ("lat", pa.float64()),
+        ("lon", pa.float64()),
+        ("dt", pa.date32()),                # partition key: arrival DATE
+        ("provenance", pa.string()),
+    ]),
+    # Dimensions (mirror silver/conform.py + sql/ddl_star.sql).
+    "dim_vessel": pa.schema([
+        ("surrogate_key", pa.int64()),
+        ("imo", pa.string()),
+        ("vessel_name", pa.string()),
+        ("effective_from", pa.date32()),
+        ("effective_to", pa.date32()),      # 9999-12-31 open sentinel
+        ("is_current", pa.bool_()),
+        ("row_hash", pa.string()),
+        ("provenance", pa.string()),
+    ]),
+    "dim_carrier": pa.schema([
+        ("surrogate_key", pa.int64()),
+        ("scac", pa.string()),
+        ("carrier_name", pa.string()),
+        ("effective_from", pa.date32()),
+        ("effective_to", pa.date32()),      # 9999-12-31 open sentinel
+        ("is_current", pa.bool_()),
+        ("row_hash", pa.string()),
+        ("provenance", pa.string()),
+    ]),
+    "dim_port": pa.schema([
+        ("surrogate_key", pa.int64()),
+        ("unlocode", pa.string()),
+        ("lat", pa.float64()),
+        ("lon", pa.float64()),
+        ("provenance", pa.string()),
+    ]),
+    "dim_lane": pa.schema([
+        ("surrogate_key", pa.int64()),
+        ("lane_key", pa.string()),
+        ("origin_unlocode", pa.string()),
+        ("dest_unlocode", pa.string()),
+        ("provenance", pa.string()),
+    ]),
+    "operated_by": pa.schema([
+        ("vessel_imo", pa.string()),
+        ("carrier_scac", pa.string()),
+        ("provenance", pa.string()),
+    ]),
+}
+
+
+def silver_table(name: str, frame: pd.DataFrame) -> pa.Table:
+    """Build a BQ-compatible pa.Table for a Silver entity against its pinned schema.
+
+    Selects/orders the columns per ``SILVER_SCHEMAS[name]`` and CASTS the frame to
+    that schema so the written Parquet matches sql/ddl_star.sql by construction —
+    float64 measures (even when all values are whole numbers or all-None),
+    microsecond timestamps (never ns), int64 surrogate keys, date32 dates. This is
+    the single guard that keeps the BigQuery native-Parquet load from rejecting an
+    inferred INT32 / nanosecond column (T-05 type-mapping bug).
+    """
+    schema = SILVER_SCHEMAS[name]
+    missing = [f.name for f in schema if f.name not in frame.columns]
+    if missing:
+        raise ValueError(
+            f"{name}: frame missing columns {missing} required by the Silver schema "
+            f"(have {list(frame.columns)})."
+        )
+    ordered = frame[[f.name for f in schema]]
+    # safe=False allows the float<-int / us<-ns coercions we explicitly want here.
+    return pa.Table.from_pandas(ordered, schema=schema, preserve_index=False, safe=False)
+
+
+def write_silver_parquet(name: str, frame: pd.DataFrame, path) -> None:
+    """Write one Silver entity to local Parquet with BQ-compatible types.
+
+    Uses the pinned ``SILVER_SCHEMAS`` cast plus ``coerce_timestamps="us"`` /
+    ``allow_truncated_timestamps=True`` as a belt-and-suspenders guard against any
+    nanosecond timestamp reaching BigQuery TIMESTAMP (which is microsecond-only).
+    """
+    table = silver_table(name, frame)
+    pq.write_table(
+        table,
+        path,
+        coerce_timestamps="us",
+        allow_truncated_timestamps=True,
+    )
+
+
 # D-03 documented geofence calibration (radius + min-dwell). These are the FINAL
 # calibrated values for the bounded 7-day 4-port slice — the resulting port-call /
 # leg counts are a calibration artifact PRINTed by the verify gate, not asserted to
@@ -348,7 +471,7 @@ def _land_dim(bucket: str, name: str, frame: pd.DataFrame, tmp: Path) -> bool:
     key = DIM_KEYS[name]
     local = tmp / name / Path(key).name
     local.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(pa.Table.from_pandas(frame, preserve_index=False), local)
+    write_silver_parquet(name, frame, local)
     return lib.gcs.upload_if_absent(bucket, key, str(local))
 
 
@@ -372,7 +495,7 @@ def _land_fact(bucket: str, name: str, rows: list[dict], date_field: str, tmp: P
         local = tmp / name / f"dt={dt_part}" / f"{name}.parquet"
         local.parent.mkdir(parents=True, exist_ok=True)
         frame = pd.DataFrame(recs)
-        pq.write_table(pa.Table.from_pandas(frame, preserve_index=False), local)
+        write_silver_parquet(name, frame, local)
         if lib.gcs.upload_if_absent(bucket, key, str(local)):
             landed += 1
         else:
