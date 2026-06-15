@@ -106,10 +106,18 @@ CREATE TABLE IF NOT EXISTS `data-architecture-msds683.ofa_star.dim_port` (
 );
 
 -- dim_lane (SCD1) — lane_key natural key; provenance real.
+-- CR-01: the load path produces FIVE columns (dags SCHEMAS["dim_lane"] +
+-- silver SILVER_SCHEMAS["dim_lane"], with conform.conform_dim_lane passing through
+-- the _lanes_dataframe() origin_unlocode/dest_unlocode columns). The committed DDL
+-- (the M4 deliverable) must mirror that 5-column load contract EXACTLY so the
+-- Parquet load maps cleanly and the served dim_lane is the table this DDL defines
+-- (no CREATE_IF_NEEDED divergence between a 3-col DDL table and a 5-field load).
 CREATE TABLE IF NOT EXISTS `data-architecture-msds683.ofa_star.dim_lane` (
-  surrogate_key INT64,
-  lane_key      STRING,
-  provenance    STRING
+  surrogate_key   INT64,
+  lane_key        STRING,
+  origin_unlocode STRING,
+  dest_unlocode   STRING,
+  provenance      STRING
 );
 
 -- --------------------------------------------------------------------------- --
@@ -119,4 +127,35 @@ CREATE TABLE IF NOT EXISTS `data-architecture-msds683.ofa_star.operated_by` (
   vessel_imo   STRING,
   carrier_scac STRING,
   provenance   STRING
+);
+
+-- --------------------------------------------------------------------------- --
+-- SCD2 staging tables (CR-02/CR-03). The SCD2 dims (dim_vessel/dim_carrier) are now
+-- loaded EXCLUSIVELY via staging->MERGE (the WRITE_TRUNCATE-of-dim overwrite tasks
+-- were removed, eliminating the data race + the no-op MERGE). load_staging_dim_*
+-- WRITE_TRUNCATEs the full Silver SCD2 snapshot into these staging tables; the
+-- merge_dim_* MERGE then upserts staging -> the persistent dim. The operator's
+-- CREATE_IF_NEEDED would also create them, but declaring them here keeps the
+-- committed DDL the single source of truth (mirrors dim_vessel/dim_carrier columns).
+-- --------------------------------------------------------------------------- --
+CREATE TABLE IF NOT EXISTS `data-architecture-msds683.ofa_star.stg_dim_vessel` (
+  surrogate_key  INT64,
+  imo            STRING,
+  vessel_name    STRING,
+  effective_from DATE,
+  effective_to   DATE,
+  is_current     BOOL,
+  row_hash       STRING,
+  provenance     STRING
+);
+
+CREATE TABLE IF NOT EXISTS `data-architecture-msds683.ofa_star.stg_dim_carrier` (
+  surrogate_key  INT64,
+  scac           STRING,
+  carrier_name   STRING,
+  effective_from DATE,
+  effective_to   DATE,
+  is_current     BOOL,
+  row_hash       STRING,
+  provenance     STRING
 );
