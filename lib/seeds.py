@@ -19,3 +19,6 @@ SEED: int = 20240614
 BOOKINGS_OFFSET: int = 1000
 EVENTS_OFFSET: int = 2000
 SCHEDULES_OFFSET: int = 3000
+# Phase-4 Silver: synthetic vessel->carrier operated_by / carrier assignment
+# (D-09 — AIS has no operator field; reference-assigned carrier is synthetic).
+OPERATED_BY_OFFSET: int = 4000

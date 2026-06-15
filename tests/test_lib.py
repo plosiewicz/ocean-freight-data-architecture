@@ -47,14 +47,21 @@ def test_write_jsonl_byte_stable(tmp_jsonl_dir: Path) -> None:
 
 
 def test_seeds_offsets_distinct() -> None:
-    derived = {
-        lib.seeds.SEED + lib.seeds.BOOKINGS_OFFSET,
-        lib.seeds.SEED + lib.seeds.EVENTS_OFFSET,
-        lib.seeds.SEED + lib.seeds.SCHEDULES_OFFSET,
-    }
-    # Three distinct derived stream seeds => independent reproducible streams.
-    assert len(derived) == 3
-    for off in (lib.seeds.BOOKINGS_OFFSET, lib.seeds.EVENTS_OFFSET, lib.seeds.SCHEDULES_OFFSET):
+    # The new Phase-4 OPERATED_BY_OFFSET is included so its distinctness from the
+    # three Phase-3 offsets (1000/2000/3000) is ACTIVELY guarded — not trivially
+    # passing (04-03-PLAN.md amended acceptance criterion).
+    offsets = (
+        lib.seeds.BOOKINGS_OFFSET,
+        lib.seeds.EVENTS_OFFSET,
+        lib.seeds.SCHEDULES_OFFSET,
+        lib.seeds.OPERATED_BY_OFFSET,
+    )
+    derived = {lib.seeds.SEED + off for off in offsets}
+    # Four distinct derived stream seeds => independent reproducible streams.
+    assert len(derived) == len(offsets) == 4
+    # The raw offsets themselves must also be distinct integers.
+    assert len(set(offsets)) == 4
+    for off in offsets:
         assert isinstance(off, int)
 
 
