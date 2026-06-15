@@ -74,8 +74,14 @@ ddl:
 # (dags/ofa_warehouse_dag.py), so NO `pip install -e .` is required here. Keep this
 # install-free so the target is portable (local + Composer) — tests/test_dag.py
 # guards the bootstrap.
+# GCP auth: local Airflow has no `google_cloud_default` connection (Composer auto-
+# provides it). Point it at Application Default Credentials via an env-var connection
+# (empty google-cloud-platform:// URI → ADC), so the Google operators authenticate as
+# the compute SA. The DAG still uses the default conn id, so it stays Composer-portable.
 load-bq:
 	AIRFLOW__CORE__DAGS_FOLDER=$(PWD)/dags AIRFLOW_HOME=$(PWD)/.airflow \
+	AIRFLOW_CONN_GOOGLE_CLOUD_DEFAULT='google-cloud-platform://' \
+	AIRFLOW__CORE__LOAD_EXAMPLES=False \
 		airflow dags test $(DAG_ID) $(DAG_DATE)
 
 # warehouse: full warehouse path in dependency order (mirrors the silver: chain).
