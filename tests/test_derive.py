@@ -7,8 +7,9 @@ Covers the behaviors specified in 04-04-PLAN.md Task 1 (ETL-01 / criterion 2):
     transit_hours = B.arrival - A.departure, distance_nm = great-circle between
     centroids, provenance="real" (D-10).
   - a single-call vessel produces ZERO legs (Pitfall 7).
-  - two consecutive calls at the SAME port produce a leg with distance_nm == 0
-    (kept + counted per the documented policy, Pitfall 7).
+  - two consecutive calls at the SAME port produce ZERO legs — origin == dest is
+    a same-fence re-entry, not a transit, and is EXCLUDED from fact_voyage_leg
+    (CR-01); a leg is by definition between two DIFFERENT ports.
   - schedule_delta is NaN/None for a leg whose (origin,dest) has no matching
     synthetic proforma lane (Pitfall 8); it is populated only on a matched lane.
 
@@ -101,17 +102,34 @@ def test_single_call_vessel_yields_zero_legs() -> None:
     assert legs == []
 
 
-def test_same_port_consecutive_calls_yield_zero_distance_leg() -> None:
-    """Two consecutive calls at the SAME port -> distance_nm == 0, kept (Pitfall 7)."""
+def test_same_port_consecutive_calls_yield_zero_legs() -> None:
+    """Two consecutive calls at the SAME port -> ZERO legs (CR-01).
+
+    A voyage leg is by definition a transit between two DIFFERENT ports. Two
+    consecutive calls at the same UN/LOCODE are a same-fence re-entry (drift out
+    of the 5 nm circle / berth shift / track gap), NOT a transit — they must NOT
+    produce a spurious zero-distance leg that pollutes fact_voyage_leg.
+    """
     calls = [
         _call("9074729", "USHOU", dt.datetime(2024, 1, 1, 6, 0), dt.datetime(2024, 1, 1, 9, 0)),
         _call("9074729", "USHOU", dt.datetime(2024, 1, 2, 6, 0), dt.datetime(2024, 1, 2, 9, 0)),
     ]
     legs = derive.derive_voyage_legs(calls, CENTROIDS)
+    assert legs == []
+
+
+def test_same_port_interleaved_with_real_leg_keeps_only_the_real_leg() -> None:
+    """A->A->B sequence keeps only the real A->B leg; the A->A pair is dropped (CR-01)."""
+    calls = [
+        _call("9074729", "USHOU", dt.datetime(2024, 1, 1, 6, 0), dt.datetime(2024, 1, 1, 9, 0)),
+        _call("9074729", "USHOU", dt.datetime(2024, 1, 2, 6, 0), dt.datetime(2024, 1, 2, 9, 0)),
+        _call("9074729", "USNYC", dt.datetime(2024, 1, 4, 9, 0), dt.datetime(2024, 1, 4, 12, 0)),
+    ]
+    legs = derive.derive_voyage_legs(calls, CENTROIDS)
     assert len(legs) == 1
     assert legs[0]["origin_unlocode"] == "USHOU"
-    assert legs[0]["dest_unlocode"] == "USHOU"
-    assert legs[0]["distance_nm"] == 0.0
+    assert legs[0]["dest_unlocode"] == "USNYC"
+    assert legs[0]["distance_nm"] > 0.0
 
 
 def test_schedule_delta_nan_on_unmatched_lane() -> None:

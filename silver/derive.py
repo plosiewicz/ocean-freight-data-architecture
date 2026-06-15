@@ -168,8 +168,14 @@ def derive_voyage_legs(
     proforma), ``dt`` partition = origin-departure date (Pitfall 4), and
     ``provenance="real"`` (D-11).
 
-    Edge cases (Pitfall 7): a single-call vessel emits ZERO legs; same-port
-    consecutive calls emit a leg with ``distance_nm == 0`` (kept + counted).
+    Edge cases (Pitfall 7): a single-call vessel emits ZERO legs. A voyage leg
+    is BY DEFINITION a transit between two DIFFERENT ports, so consecutive calls
+    at the SAME UN/LOCODE (``origin == dest``) are NOT a leg — they are a
+    same-fence re-entry (drifted out of the 5 nm circle, berth shift, or AIS
+    track gap) and are EXCLUDED here (CR-01). The geofence layer also coalesces
+    such re-entries into one call upstream, so these same-port pairs should not
+    even reach this function; this is a belt-and-suspenders guard so a
+    zero-distance, transit-meaningless "leg" can never pollute fact_voyage_leg.
 
     Returns a list of fact_voyage_leg dicts in deterministic (vessel, leg) order.
     """
@@ -187,6 +193,11 @@ def derive_voyage_legs(
         for a, b in zip(rows, rows[1:]):
             origin = a["unlocode"]
             dest = b["unlocode"]
+            # CR-01: a voyage leg requires origin != dest. Same-port consecutive
+            # calls are a same-fence re-entry, not a transit — exclude them so
+            # fact_voyage_leg carries only real inter-port legs.
+            if origin == dest:
+                continue
             transit_hours = (b["arrival_ts"] - a["departure_ts"]).total_seconds() / 3600.0
             a_lat, a_lon = port_centroids[origin]
             b_lat, b_lon = port_centroids[dest]
