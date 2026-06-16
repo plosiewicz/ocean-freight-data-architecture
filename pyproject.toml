@@ -51,6 +51,15 @@ dependencies = [
     "apache-airflow-providers-google==17.1.0",  # constraints-3.0.6 resolved pin (A2)
     "google-cloud-bigquery",
     "db-dtypes",
+    # --- Phase 6: graph store (first graph deps; prior-repo pins, 06-01 Task 1) ---
+    # python-arango EXACT == 8.3.2 prior-repo pin (06-RESEARCH § Standard Stack / A6):
+    # the driver targeting the managed ArangoDB 3.12.x cluster HTTP API.
+    "python-arango==8.3.2",
+    # networkx unpinned (prior-repo convention) — client-side criticality FALLBACK
+    # path (GAE server-side is primary per the Phase-6 correction).
+    "networkx",
+    # python-dotenv loads the gitignored repo-root .env carrying the ARANGO_* creds.
+    "python-dotenv",
 ]
 
 [project.optional-dependencies]
