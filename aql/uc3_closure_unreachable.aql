@@ -1,35 +1,54 @@
 // UC3 (GRAPH-02) — GENUINE-UNREACHABILITY under chokepoint closure.
 // RESERVED for chokepoints that TRULY FRAGMENT this topology — i.e. GIBRALTAR,
 // the only featured chokepoint whose closure leaves a port with NO alternative
-// route (Europe partners reach the US only through the Med approach in this
+// route (the European partners reach the US only through the Med approach in this
 // network). SUEZ / PANAMA / MALACCA do NOT fragment it (Far-East ports stay
 // reachable via the trans-Pacific lanes + US<->US proforma routes), so they are
 // answered by aql/uc3_reroute_impact.aql instead — NEVER by a hard-coded
 // "unreachable" assertion here (D-12 reframe).
 //
-// Closing a chokepoint is modelled as a REVERSIBLE PRUNE over the `route` edge
-// collection: any route leg whose real `chokepoints` array contains @closed is not
-// traversable. The closure NEVER drops (REMOVEs) a vertex or edge (D-09 / threat
-// T-06-07) — Gibraltar / Suez scenarios run back-to-back without mutating the graph.
+// TRUE reachability (06-07 Rule-1 fix): closing a chokepoint is modelled as
+// excluding every `route` leg whose real `chokepoints` array contains @closed. A
+// target port is REACHABLE iff there still EXISTS a path none of whose edges
+// transit @closed. A naive `FOR v, e IN ... OUTBOUND route ... FILTER @closed NOT
+// IN e.chokepoints` with `uniqueVertices: 'global'` is ORDER-DEPENDENT — it can
+// prune a vertex via a transiting path before the clean detour is found, reporting
+// a false drop for non-fragmenting chokepoints (SUEZ would look like it
+// fragments). Instead we test path EXISTENCE per (origin, target) with
+// K_SHORTEST_PATHS, keeping only candidate paths whose edges all avoid @closed —
+// so SUEZ/PANAMA correctly show NO drop (reroute exists) and GIBRALTAR correctly
+// drops (the European ports have no clean alternative). Reversible: a FILTER over
+// the `route` edge collection, never a REMOVE/DELETE (D-09 / threat T-06-07) —
+// Gibraltar / Suez scenarios run back-to-back without mutating the graph.
 //
-// The traversal binds the EDGE variable (`FOR v, e`) and walks ONLY the `route`
-// edge collection (NOT the full named graph, which would also walk
-// calls_at / operates / transits_chokepoint and a phantom lane attribute). Reachability
-// is recomputed per origin port; comparing reachable_count to the baseline (run
-// with a non-existent @closed, or LENGTH(ports)) reveals true fragmentation.
+// Bounded by @maxhops (the K_SHORTEST_PATHS candidate cap) so the per-pair
+// existence probe stays cheap and index-backed (the route edge index). Walks ONLY
+// the `route` edge collection (NOT the full named graph, which would also walk
+// calls_at / operates / transits_chokepoint and a phantom lane attribute).
 //
 // All UC params are AQL BIND variables (@closed, @maxhops) — user values are NEVER
 // string-interpolated (ASVS V5 / threat T-06-06).
 //
 // @closed   : a `chokepoints` vertex _key that genuinely fragments (e.g. "GIBRALTAR")
-// @maxhops  : bounded traversal depth (keeps the route traversal cheap)
+// @maxhops  : candidate-path enumeration cap (keeps the route probe cheap)
 FOR origin IN ports
   LET reachable = (
-    FOR v, e IN 1..@maxhops OUTBOUND origin route
-      OPTIONS { bfs: true, uniqueVertices: 'global' }
-      PRUNE @closed IN e.chokepoints
-      FILTER e == null OR @closed NOT IN e.chokepoints
-      RETURN DISTINCT v._key
+    FOR target IN ports
+      FILTER target._key != origin._key
+      LET clean = FIRST(
+        FOR p IN OUTBOUND K_SHORTEST_PATHS origin._id TO target._id route
+          OPTIONS { weightAttribute: 'transit_time_hours', defaultWeight: 1e9 }
+          LIMIT @maxhops
+          FILTER LENGTH(
+            FOR e IN p.edges
+              FILTER @closed IN e.chokepoints
+              RETURN 1
+          ) == 0
+          LIMIT 1
+          RETURN 1
+      )
+      FILTER clean != null
+      RETURN target._key
   )
   RETURN {
     origin: origin._key,

@@ -56,12 +56,17 @@ def run_transit_share(*, db: Any = None) -> list[Any]:
     return run_query(SHARE_QUERY, {}, db=db)
 
 
-def run_closure(closed: str, *, maxhops: int = 6, db: Any = None) -> list[Any]:
+def run_closure(closed: str, *, maxhops: int = 200, db: Any = None) -> list[Any]:
     """Run the GENUINE-UNREACHABILITY closure for chokepoint ``closed`` (bind vars).
 
-    Route-edge-scoped traversal reserved for chokepoints that truly fragment the
-    topology (GIBRALTAR). Returns per-origin ``reachable_count`` rows; a drop vs the
-    baseline (LENGTH(ports)) is genuine fragmentation. Reversible (prune, not delete).
+    Route-edge-scoped path-existence probe reserved for chokepoints that truly
+    fragment the topology (GIBRALTAR). For each (origin, target) port pair it asks
+    whether a path exists none of whose ``route`` edges transit ``closed`` (via
+    K_SHORTEST_PATHS, ``@maxhops`` = the candidate-path enumeration cap). Returns
+    per-origin ``reachable_count`` rows; a drop vs the baseline (a non-fragmenting
+    ``closed``) is genuine fragmentation. SUEZ/PANAMA show NO drop (a reroute
+    exists); GIBRALTAR drops (the European ports have no clean alternative).
+    Reversible (FILTER, not delete).
     """
     return run_query(
         CLOSURE_QUERY,

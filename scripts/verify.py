@@ -74,6 +74,7 @@ GATES: tuple[str, ...] = (
     "graph_load",
     "xstore_count_parity",
     "xstore_semantic",
+    "uc_anti_degeneracy",
 )
 
 # Bronze exit codes (UNCHANGED — 0..4).
@@ -111,6 +112,15 @@ EXIT_UC2_NO_TREND: int = 15
 EXIT_GRAPH_LOAD: int = 16  # ocean_network graph / collections absent or empty
 EXIT_XSTORE_COUNT_PARITY: int = 17  # dim rows != vertex counts (shared-key mismatch)
 EXIT_XSTORE_SEMANTIC: int = 18  # Suez-transiting-leg counts don't reconcile BQ<->Arango
+
+# UC anti-degeneracy exit code (NEW — exit 19, the LAST gate). This is the
+# structural recurrence-prevention mechanism: it EXECUTES the UC3 reroute-impact +
+# GIBRALTAR genuine-unreachability + UC4 reroute queries LIVE against the managed
+# cluster and asserts NON-TRIVIAL results matching the LOCKED D-12 reframe. A green
+# ``make verify`` therefore MEANS the use cases genuinely work — not merely that the
+# graph loaded (the 18-gate green-but-hollow failure 06-VERIFICATION flagged). It
+# runs LAST in the ladder because it is the most expensive (multiple live traversals).
+EXIT_UC_DEGENERATE: int = 19
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SHA256_FILE = REPO_ROOT / "synthetic.sha256"
@@ -973,6 +983,23 @@ XSTORE_DIM_VERTEX_PAIRS = (
     ("dim_carrier", "carriers", True),
 )
 
+# --- UC anti-degeneracy gate (exit 19) config ----------------------------------- #
+# The transoceanic demo pair the reroute-impact / UC4 assertions exercise. It now
+# resolves end-to-end because the 06-06 loader landed the synthetic foreign ports
+# (CNSHA) into the `ports` collection, so a SHORTEST_PATH terminates. USNYC->CNSHA
+# transits SUEZ + PANAMA, so closing either forces the trans-Pacific
+# USNYC->USLAX->CNSHA detour (a strictly-positive reroute delta).
+UC_DEMO_ORIGIN = "USNYC"
+UC_DEMO_DEST = "CNSHA"
+# The ONE featured chokepoint that genuinely FRAGMENTS this US-centric topology
+# (the European partners reach the US only via the Med/Gibraltar approach). The gate
+# hard-codes GIBRALTAR here and NOWHERE asserts a SUEZ/PANAMA/MALACCA strict
+# reachability drop — those are FALSE (reroute-impact, not fragmentation; D-12).
+UC_FRAGMENTING_CHOKEPOINT = "GIBRALTAR"
+# A sentinel "closed" chokepoint that no lane transits — the closure baseline. Its
+# total reachable count is the unconstrained baseline GIBRALTAR is compared against.
+UC_OPEN_SENTINEL = "__NONE_OPEN__"
+
 
 def _arango_db():
     """Lazy-connect to the managed ArangoDB cluster via lib.arango_client (TLS-on).
@@ -1185,6 +1212,207 @@ def gate_xstore_semantic() -> bool:
     return True
 
 
+def _total_reachable(rows: list[Any]) -> int:
+    """Sum the per-origin ``reachable_count`` from a closure result (defensive)."""
+    return sum(int(r.get("reachable_count", 0) or 0) for r in rows)
+
+
+def gate_uc_anti_degeneracy() -> bool:
+    """LIVE UC3/UC4 non-degeneracy gate (exit 19) — the recurrence-prevention mechanism.
+
+    Executes the use-case queries against the managed cluster and ASSERTS non-trivial
+    results matching the LOCKED D-12 reframe — so a green ``make verify`` MEANS the
+    use cases genuinely work, not merely that the graph loaded (the 18-gate
+    green-but-hollow failure 06-VERIFICATION flagged). Three assertions:
+
+      1. UC3 REROUTE-IMPACT non-degeneracy: for a FEATURED non-fragmenting chokepoint
+         that actually has transiting lanes (SUEZ / PANAMA — derived deterministically
+         from ``chokepoints_for_lane`` over the canonical network, never guessed),
+         closing it must force the ``UC_DEMO_ORIGIN -> UC_DEMO_DEST`` route onto a
+         longer detour: the reroute path DIFFERS from baseline AND the summed
+         reroute delta is STRICTLY > 0. FAILS (19) if the path is empty, identical,
+         or delta <= 0 (the original degenerate symptom). Does NOT assert that closing
+         SUEZ/PANAMA drops reachability — it does not, and asserting it would
+         re-introduce the false degenerate gate.
+
+      2. UC3 GENUINE-UNREACHABILITY (GIBRALTAR only): closing GIBRALTAR must STRICTLY
+         REDUCE the total reachable port count vs the open baseline (the chokepoint
+         that genuinely fragments). FAILS (19) if equal. Hard-coded to GIBRALTAR — no
+         strict-drop assertion is looped over SUEZ/PANAMA/MALACCA.
+
+      3. UC4 reroute non-degeneracy: a baseline transoceanic SHORTEST_PATH exists
+         (non-empty); re-run with the baseline path's lanes disabled, the reroute path
+         DIFFERS AND its delta is STRICTLY > 0. FAILS (19) if empty/identical/delta<=0.
+
+    All UC params stay AQL bind variables via the analytics facades / run_query
+    (threat T-06-06). Connects only via the analytics facades' lazy ``get_db`` (env
+    creds, TLS-on); prints only ``[CITE]`` counts + path hours, never credentials
+    (threat T-06-01). The reroute-impact / closure scenarios are reversible FILTERs —
+    running them never mutates the graph (threat T-06-05).
+    """
+    try:
+        from analytics import uc3_closure, uc4_reroute
+        from data_gen.network import LANES, US_US_LANES
+        from lib.graph_loader import chokepoints_for_lane
+        from lib.graph_queries import disabled_lane_keys_for_chokepoint, reroute_delta
+    except Exception as exc:  # noqa: BLE001
+        _fail("uc_anti_degeneracy: analytics/graph modules unavailable", str(exc))
+        return False
+
+    db = _arango_db()
+    if db is None:
+        return False
+
+    origin_id = f"ports/{UC_DEMO_ORIGIN}"
+    dest_id = f"ports/{UC_DEMO_DEST}"
+
+    # --- (1) UC3 reroute-impact: a featured non-fragmenting chokepoint with lanes. -- #
+    # Derive deterministically which featured chokepoint actually has transiting lanes
+    # on the demo pair (so the assertion is meaningful, not a guess). Prefer SUEZ then
+    # PANAMA — the two REROUTE_IMPACT_CHOKEPOINTS.
+    all_lanes = tuple(LANES) + tuple(US_US_LANES)
+    demo_transits = chokepoints_for_lane(UC_DEMO_ORIGIN, UC_DEMO_DEST)
+    candidate = next(
+        (cp for cp in uc3_closure.REROUTE_IMPACT_CHOKEPOINTS if cp in demo_transits),
+        None,
+    )
+    if candidate is None:
+        _fail(
+            "uc_anti_degeneracy: demo pair transits no featured non-fragmenting chokepoint",
+            f"{UC_DEMO_ORIGIN}->{UC_DEMO_DEST} transits {demo_transits!r}; expected SUEZ/PANAMA",
+        )
+        return False
+
+    try:
+        impact = uc3_closure.run_reroute_impact(
+            candidate, UC_DEMO_ORIGIN, UC_DEMO_DEST, db=db
+        )
+    except Exception as exc:  # noqa: BLE001
+        _fail("uc_anti_degeneracy: UC3 reroute-impact query failed", str(exc))
+        return False
+
+    baseline_legs = impact["baseline_legs"]
+    reroute_legs = impact["reroute_legs"]
+    if not baseline_legs:
+        _fail(
+            "uc_anti_degeneracy: UC3 baseline path empty",
+            f"no {UC_DEMO_ORIGIN}->{UC_DEMO_DEST} route — re-run `make load-arango` (foreign ports loaded?)",
+        )
+        return False
+    if not reroute_legs or len(reroute_legs) <= 1:
+        _fail(
+            "uc_anti_degeneracy: UC3 reroute path empty (degenerate)",
+            f"closing {candidate} left no detour — disabled-lane filter is a no-op (the hollow defect)",
+        )
+        return False
+    impact_delta = impact["delta"]
+    if reroute_legs == baseline_legs or impact_delta <= 0:
+        _fail(
+            "uc_anti_degeneracy: UC3 reroute-impact delta not strictly positive",
+            f"closing {candidate}: baseline_sum={sum(baseline_legs):.2f} "
+            f"reroute_sum={sum(reroute_legs):.2f} delta={impact_delta:.2f} (expected > 0)",
+        )
+        return False
+    print(
+        f"[CITE] UC3 reroute-impact: closing {candidate} reroutes "
+        f"{UC_DEMO_ORIGIN}->{UC_DEMO_DEST} ({len(impact['disabled_lanes'])} lanes disabled); "
+        f"baseline {sum(baseline_legs):.1f}h -> reroute {sum(reroute_legs):.1f}h "
+        f"(+{impact_delta:.1f}h detour cost, D-12 reroute-impact)"
+    )
+
+    # --- (2) UC3 genuine unreachability — GIBRALTAR ONLY. -------------------------- #
+    try:
+        baseline_rows = uc3_closure.run_closure(UC_OPEN_SENTINEL, db=db)
+        gib_rows = uc3_closure.run_closure(UC_FRAGMENTING_CHOKEPOINT, db=db)
+    except Exception as exc:  # noqa: BLE001
+        _fail("uc_anti_degeneracy: UC3 closure query failed", str(exc))
+        return False
+    baseline_reach = _total_reachable(baseline_rows)
+    gib_reach = _total_reachable(gib_rows)
+    if baseline_reach <= 0:
+        _fail(
+            "uc_anti_degeneracy: closure baseline reachable count is zero",
+            "the route network is empty — re-run `make load-arango`",
+        )
+        return False
+    if not (gib_reach < baseline_reach):
+        _fail(
+            "uc_anti_degeneracy: GIBRALTAR closure did NOT reduce reachability",
+            f"baseline={baseline_reach} GIBRALTAR={gib_reach} (expected GIBRALTAR strictly lower — "
+            "the one chokepoint that genuinely fragments this topology)",
+        )
+        return False
+    print(
+        f"[CITE] UC3 genuine unreachability: closing {UC_FRAGMENTING_CHOKEPOINT} drops "
+        f"total reachable ports {baseline_reach} -> {gib_reach} "
+        f"(European partners lose their only Med/Gibraltar approach — genuine fragmentation, D-12)"
+    )
+
+    # --- (3) UC4 reroute non-degeneracy. ------------------------------------------ #
+    try:
+        uc4_baseline = uc4_reroute.run_path(origin_id, dest_id, db=db)
+    except Exception as exc:  # noqa: BLE001
+        _fail("uc_anti_degeneracy: UC4 baseline path query failed", str(exc))
+        return False
+    if not uc4_baseline or len(uc4_baseline) <= 1:
+        _fail(
+            "uc_anti_degeneracy: UC4 baseline path empty",
+            f"no weighted {UC_DEMO_ORIGIN}->{UC_DEMO_DEST} path — re-run `make load-arango`",
+        )
+        return False
+    # Disable the lanes transiting the same featured chokepoint to force a reroute.
+    uc4_disabled = disabled_lane_keys_for_chokepoint(
+        all_lanes, chokepoints_for_lane, candidate
+    )
+    try:
+        uc4_reroute_rows = uc4_reroute.run_path(
+            origin_id, dest_id, disabled_lanes=uc4_disabled, db=db
+        )
+    except Exception as exc:  # noqa: BLE001
+        _fail("uc_anti_degeneracy: UC4 reroute path query failed", str(exc))
+        return False
+    if not uc4_reroute_rows or len(uc4_reroute_rows) <= 1:
+        _fail(
+            "uc_anti_degeneracy: UC4 reroute path empty (degenerate)",
+            f"closing {candidate} left no weighted detour — disabled-lane filter is a no-op",
+        )
+        return False
+    uc4_base_hours = uc4_reroute.leg_hours(uc4_baseline)
+    uc4_reroute_hours = uc4_reroute.leg_hours(uc4_reroute_rows)
+    uc4_delta = reroute_delta(uc4_base_hours, uc4_reroute_hours)
+    uc4_base_ports = [r.get("port") for r in uc4_baseline]
+    uc4_reroute_ports = [r.get("port") for r in uc4_reroute_rows]
+    if uc4_reroute_ports == uc4_base_ports or uc4_delta <= 0:
+        _fail(
+            "uc_anti_degeneracy: UC4 reroute path did not differ / delta not positive",
+            f"baseline_ports={uc4_base_ports} reroute_ports={uc4_reroute_ports} "
+            f"delta={uc4_delta:.2f} (expected a different path with delta > 0)",
+        )
+        return False
+    print(
+        f"[CITE] UC4 reroute: weighted {UC_DEMO_ORIGIN}->{UC_DEMO_DEST} baseline "
+        f"{'->'.join(uc4_base_ports)} ({sum(uc4_base_hours):.1f}h) -> reroute "
+        f"{'->'.join(uc4_reroute_ports)} ({sum(uc4_reroute_hours):.1f}h, +{uc4_delta:.1f}h, D-10)"
+    )
+
+    # Documented honest zero: MALACCA carries no US-trade transiting lane (correct,
+    # never fabricated). PRINT it as the deck's honesty note (non-asserting).
+    malacca_lanes = disabled_lane_keys_for_chokepoint(
+        all_lanes, chokepoints_for_lane, "MALACCA"
+    )
+    print(
+        f"[CITE] UC3 documented zero: MALACCA transits {len(malacca_lanes)} US-trade lane(s) "
+        f"(an Asia-Europe chokepoint US lanes correctly never cross — honest zero, D-12)"
+    )
+
+    _ok(
+        "uc_anti_degeneracy gate: UC3 reroute-impact (delta>0) + GIBRALTAR genuine "
+        "unreachability + UC4 reroute (delta>0) all proven LIVE — the use cases are "
+        "non-degenerate; the green-but-hollow failure cannot recur"
+    )
+    return True
+
+
 def main() -> int:
     print(f"[INFO] Bronze+Silver+BQ+Graph ship-gate — running gates: {', '.join(GATES)}")
 
@@ -1236,12 +1464,21 @@ def main() -> int:
     if not gate_xstore_semantic():
         return EXIT_XSTORE_SEMANTIC
 
+    # --- UC anti-degeneracy gate (19) — LAST in the ladder (the most expensive: it
+    # executes multiple live UC traversals). This is the structural recurrence guard:
+    # it EXECUTES UC3 reroute-impact + GIBRALTAR genuine-unreachability + UC4 reroute
+    # against the cluster and asserts non-trivial results (D-12 reframe), so a green
+    # verify MEANS the use cases work — not just that the graph loaded.
+    if not gate_uc_anti_degeneracy():
+        return EXIT_UC_DEGENERATE
+
     _ok(
         "all gates",
         "Bronze + Silver + BQ + Graph slice verified end-to-end: fact loaded, "
         "partitioned+clustered, idempotent re-run, UC1 non-null, UC2 trend, "
-        "ocean_network loaded, cross-store count-parity + Suez semantic reconciliation "
-        "(criteria 1-4 + WH-01/02/03 + ETL-02/04/05 + GRAPH-01 proven)",
+        "ocean_network loaded, cross-store count-parity + Suez semantic reconciliation, "
+        "UC3 reroute-impact + GIBRALTAR fragmentation + UC4 reroute non-degeneracy "
+        "(criteria 1-4 + WH-01/02/03 + ETL-02/04/05 + GRAPH-01/02/03 proven)",
     )
     return EXIT_OK
 

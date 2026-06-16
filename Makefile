@@ -12,7 +12,7 @@ BRONZE_BUCKET ?= gs://data-architecture-msds683-bronze
 PYTHON ?= python
 
 .PHONY: pull-ais pull-reference pull-priors generate load-bronze verify bronze conform derive silver \
-        ddl load-bq warehouse refreeze-sha256 load-arango verify-cluster
+        ddl load-bq warehouse refreeze-sha256 load-arango verify-cluster verify-uc
 
 # --- Warehouse config (Phase 5) ---
 BQ_PROJECT ?= data-architecture-msds683
@@ -41,6 +41,16 @@ load-bronze:
 # --- Ship-gate (this plan: scripts/verify.py skeleton, honestly red until inputs land) ---
 verify:
 	$(PYTHON) -m scripts.verify
+
+# --- Focused LIVE UC anti-degeneracy gate (exit 19) for fast iteration -----------
+# Runs ONLY gate_uc_anti_degeneracy against the managed ArangoDB cluster (.env creds,
+# TLS-on): it EXECUTES UC3 reroute-impact (SUEZ/PANAMA detour, delta>0), the GIBRALTAR
+# genuine-unreachability drop, and the UC4 weighted reroute (delta>0), then exits the
+# gate's code (0 = non-degenerate, 19 = degenerate). `make verify` still runs the full
+# 0..19 ladder; this is the smoke target for iterating on the graph/UC layer alone
+# (mirrors `make verify-cluster`). The DAG verify task also gates on the same logic.
+verify-uc:
+	$(PYTHON) -c "import sys; from scripts.verify import gate_uc_anti_degeneracy, EXIT_OK, EXIT_UC_DEGENERATE; sys.exit(EXIT_OK if gate_uc_anti_degeneracy() else EXIT_UC_DEGENERATE)"
 
 # --- Chained orchestrator: full Bronze pipeline in dependency order ---
 bronze: pull-reference pull-priors pull-ais generate load-bronze verify

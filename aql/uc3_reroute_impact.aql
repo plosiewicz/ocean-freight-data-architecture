@@ -1,16 +1,22 @@
 // UC3 (GRAPH-02) component (c) — REROUTE-IMPACT of a chokepoint closure.
 // The HONEST finding for a well-meshed US-centric network (D-12 reframe): closing
 // a chokepoint rarely DISCONNECTS a port — it forces a longer DETOUR. So UC3's
-// "what does closing X cost?" is answered by reusing the UC4 weighted-SHORTEST_PATH
-// mechanism (D-10): re-run the time-optimal @origin -> @dest path over the `route`
-// edge collection with @disabled_lanes = the lane_keys transiting the closed
+// "what does closing X cost?" is answered by reusing the UC4 weighted shortest-path
+// mechanism (D-10): re-compute the time-optimal @origin -> @dest path over the
+// `route` edge collection while EXCLUDING the lane_keys transiting the closed
 // chokepoint, and let the Python side sum the baseline-vs-reroute delta
 // (lib.graph_queries.reroute_delta). A positive delta is the extra transit hours
 // the closure imposes — the reroute-impact headline.
 //
-// Genuine unreachability (a port-pair with NO alternative) is NOT reported here —
-// that is reserved for chokepoints that truly fragment the topology (GIBRALTAR),
-// handled by aql/uc3_closure_unreachable.aql. SUEZ/PANAMA/MALACCA use THIS query.
+// WHY K_SHORTEST_PATHS (06-07 Rule-1 fix): a single OUTBOUND SHORTEST_PATH computes
+// the optimal path FIRST and only THEN applies a post-hoc FILTER, so excluding the
+// optimal lane merely DROPS the result rows — it never re-routes onto the next-best
+// path, leaving the reroute leg list EMPTY and the delta degenerate (<= 0). That was
+// the green-but-hollow defect. K_SHORTEST_PATHS enumerates candidate paths in
+// increasing weight; we keep the cheapest candidate WHOSE EDGES avoid the disabled
+// lanes — a genuine reroute that actually detours (USNYC->USLAX->CNSHA when the
+// Far-East-via-Suez direct lane is closed). The `LIMIT @maxhops_paths` bounds the
+// enumeration so the traversal stays cheap (index-backed via the route edge index).
 //
 // Restricted to the `route` edge collection (NOT `GRAPH 'ocean_network'`) so the
 // path never walks calls_at / operates / transits_chokepoint — it is a pure
@@ -27,10 +33,21 @@
 // @origin         : source port vertex id (e.g. "ports/USNYC")
 // @dest           : target port vertex id (e.g. "ports/CNSHA")
 // @disabled_lanes : lane_keys transiting the closed chokepoint ([] = baseline run)
-FOR v, e IN OUTBOUND SHORTEST_PATH @origin TO @dest route
-  OPTIONS { weightAttribute: 'transit_time_hours', defaultWeight: 1e9 }
-  FILTER e == null OR e.lane_key == null OR e.lane_key NOT IN @disabled_lanes
+LET best = FIRST(
+  FOR p IN OUTBOUND K_SHORTEST_PATHS @origin TO @dest route
+    OPTIONS { weightAttribute: 'transit_time_hours', defaultWeight: 1e9 }
+    LIMIT 200
+    FILTER LENGTH(
+      FOR e IN p.edges
+        FILTER e.lane_key != null AND e.lane_key IN @disabled_lanes
+        RETURN 1
+    ) == 0
+    LIMIT 1
+    RETURN p
+)
+FILTER best != null
+FOR i IN 0..LENGTH(best.vertices) - 1
   RETURN {
-    port: v._key,
-    leg_hours: e == null ? 0 : e.transit_time_hours
+    port: best.vertices[i]._key,
+    leg_hours: i == 0 ? 0 : best.edges[i - 1].transit_time_hours
   }
