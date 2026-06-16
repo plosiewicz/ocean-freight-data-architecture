@@ -1549,18 +1549,33 @@ def gate_demo_notebook() -> bool:
     """Re-execute docs/demo.ipynb credential-free and assert clean exit (DEL-01).
 
     Runs `jupyter nbconvert --to notebook --execute --stdout docs/demo.ipynb` in a
-    subprocess with the live-credential env vars STRIPPED (ARANGO_* / GOOGLE_* /
-    COMTRADE_API_KEY) so the notebook can only take its default frozen-snapshot path
-    (data/golden/uc*.golden.json). A non-zero exit means a cell errored — committed
-    outputs have drifted from the goldens or a snapshot is missing (T-07-11); _fail
-    and return False so main() exits EXIT_NOTEBOOK (21). If nbconvert is not installed
-    the gate _fails with a `pip install -e .[dev]` hint (it never silently passes).
+    subprocess. A non-zero exit means a cell errored — committed outputs have drifted
+    from the goldens or a snapshot is missing (T-07-11); _fail and return False so
+    main() exits EXIT_NOTEBOOK (21). If nbconvert is not installed the gate _fails with
+    a `pip install -e .[dev]` hint (it never silently passes).
+
+    Credential-free guarantee — WHAT ACTUALLY ENFORCES IT (WR-02): the notebook stays
+    credential-free because the committed notebook hard-codes ``LIVE = False`` and
+    lazy-imports ``analytics.snapshot_uc`` only inside ``if LIVE:`` — the default path
+    therefore never touches ``lib.arango_client`` at all and reads only the frozen
+    ``data/golden/uc*.golden.json``. The env-var strip below is DEFENSE-IN-DEPTH only,
+    NOT the guarantee: ``lib.arango_client._load_env`` calls
+    ``load_dotenv(_ENV_PATH, override=True)``, which reads the repo-root ``.env`` FILE
+    (and, with ``override=True``, would win back over a stripped env var). Popping
+    ``ARANGO_*`` / ``GOOGLE_*`` / ``COMTRADE_API_KEY`` from the subprocess env does NOT
+    remove that file, nor ``CLOUDSDK_*`` / ``GCLOUD_*`` ADC overrides or the on-disk ADC
+    file. So if a future edit flipped the live path on by default, the strip alone would
+    NOT prevent a live connection — the ``LIVE = False`` default + lazy import is what
+    keeps this run offline.
     """
     if not DEMO_NOTEBOOK.exists():
         _fail("demo notebook missing", f"expected {DEMO_NOTEBOOK} (DEL-01 artifact)")
         return False
 
-    # Strip live creds so the run cannot accidentally take the optional live path.
+    # Defense-in-depth strip (NOT the guarantee — see docstring/WR-02): pop live-cred
+    # env vars. This does NOT block lib.arango_client's load_dotenv(.env, override=True),
+    # so it cannot by itself force the run offline; the notebook's LIVE=False default +
+    # lazy import is what actually keeps this credential-free.
     import os
 
     env = {k: v for k, v in os.environ.items()}
