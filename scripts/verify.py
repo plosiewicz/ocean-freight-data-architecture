@@ -75,6 +75,7 @@ GATES: tuple[str, ...] = (
     "xstore_count_parity",
     "xstore_semantic",
     "uc_anti_degeneracy",
+    "credential_audit",
 )
 
 # Bronze exit codes (UNCHANGED — 0..4).
@@ -121,6 +122,17 @@ EXIT_XSTORE_SEMANTIC: int = 18  # Suez-transiting-leg counts don't reconcile BQ<
 # graph loaded (the 18-gate green-but-hollow failure 06-VERIFICATION flagged). It
 # runs LAST in the ladder because it is the most expensive (multiple live traversals).
 EXIT_UC_DEGENERATE: int = 19
+
+# Credential-audit exit code (NEW — exit 20, the next free code after the 0..19
+# ladder; codes 0..19 are UNCHANGED). This gate enforces the no-committed-secrets
+# contract at the git-tracked -> public-GitHub trust boundary (DEL-02 / threat
+# T-07-05): it scans `git ls-files` for any tracked file matching the secret patterns
+# .gitignore already excludes (a real .env, *.env*, *.key, secrets.*) and asserts
+# .env.template ships PLACEHOLDERS ONLY (threat T-07-06). It is an offline, cheap gate
+# (no cloud touch) but is appended LAST so the live-touching 16..19 ladder is unchanged.
+# On a violation it prints the offending tracked PATH only — never the matched secret
+# value (threat T-07-08, reuse the _fail label idiom).
+EXIT_CREDENTIAL_LEAK: int = 20
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SHA256_FILE = REPO_ROOT / "synthetic.sha256"
@@ -1413,6 +1425,111 @@ def gate_uc_anti_degeneracy() -> bool:
     return True
 
 
+# --------------------------------------------------------------------------- #
+# Gate 21: credential audit (exit 20) — no committed secrets cross the         #
+# git-tracked -> public-GitHub (M4) boundary (DEL-02 / threats T-07-05..08).   #
+# --------------------------------------------------------------------------- #
+# Secret PATH patterns that .gitignore (lines 19-26) already excludes. A tracked
+# file matching any of these is a leak — EXCEPT the explicitly allow-listed
+# .env.template (the placeholders-only template that .gitignore re-includes via
+# `!.env.template`). Mirror the .gitignore contract; do NOT invent new rules.
+_SECRET_PATH_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"(^|/)\.env$"),          # a real .env (root or any dir)
+    re.compile(r"(^|/)\.env\..+"),       # .env.local / .env.production / ...
+    re.compile(r".*\.env.*"),            # any *.env* (broadest secret pattern)
+    re.compile(r".*\.key$"),             # *.key key material
+    re.compile(r"(^|/)secrets\..+"),     # secrets.* (json/yaml/txt/...)
+)
+# The single allow-listed credential-surface file that MAY be tracked: it must ship
+# placeholders only. Anything else matching the patterns above is a hard leak.
+_CREDENTIAL_TEMPLATE = ".env.template"
+# Heuristic real-secret signatures inside .env.template values (T-07-06): a JWT, a
+# long opaque token, an https:// host with embedded creds, or a non-empty password-ish
+# value. The template ships KEY= (empty) or KEY=<placeholder>/<angle-bracketed> only.
+_JWT_RE = re.compile(r"^ey[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}$")
+_PLACEHOLDER_RE = re.compile(r"^(<.*>|placeholder.*|changeme.*|your[-_].*|xxx+|\.\.\.)$", re.IGNORECASE)
+
+
+def _value_looks_real(value: str) -> bool:
+    """True if an .env.template value looks like a REAL secret (not a placeholder)."""
+    v = value.strip().strip('"').strip("'")
+    if not v:
+        return False  # empty KEY= is a placeholder by convention
+    if _PLACEHOLDER_RE.match(v):
+        return False  # explicit placeholder token
+    if _JWT_RE.match(v):
+        return True   # a real-looking JWT
+    if v.lower().startswith("https://") and "@" in v:
+        return True   # url with embedded user:pass@host
+    # ARANGO_GRAPH=ocean_network is a legitimate non-secret default; allow short,
+    # lowercase, hyphen/underscore identifiers (graph/db names) — they are NOT secrets.
+    if re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,40}", v):
+        return False
+    # Anything else that is long/opaque/mixed-case is treated as a possible real secret.
+    return len(v) >= 12
+
+
+def gate_credential_audit() -> bool:
+    """Assert NO tracked file matches a secret pattern and .env.template is placeholders-only.
+
+    Offline + cheap: runs `git ls-files` and reads .env.template. Prints offending
+    PATHS only (never a secret value, T-07-08). Returns False on any leak so
+    main() exits EXIT_CREDENTIAL_LEAK (20).
+    """
+    result = subprocess.run(
+        ["git", "ls-files"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        tail = result.stderr.splitlines()[-1] if result.stderr else "no stderr"
+        _fail("git ls-files failed", tail)
+        return False
+
+    tracked = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    leaks: list[str] = []
+    for path in tracked:
+        if path == _CREDENTIAL_TEMPLATE:
+            continue  # the allow-listed placeholders-only template (audited below)
+        for pattern in _SECRET_PATH_PATTERNS:
+            if pattern.search(path):
+                leaks.append(path)  # PATH only — never read/print its contents
+                break
+
+    if leaks:
+        for path in sorted(set(leaks)):
+            _fail("committed secret pattern", f"tracked path matches a .gitignore secret rule: {path}")
+        return False
+
+    # Audit .env.template: it must ship placeholders only (T-07-06).
+    template = REPO_ROOT / _CREDENTIAL_TEMPLATE
+    real_value_keys: list[str] = []
+    if template.exists():
+        for raw in template.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            if _value_looks_real(value):
+                real_value_keys.append(key.strip())  # KEY name only — never the value
+    if real_value_keys:
+        for key in sorted(set(real_value_keys)):
+            _fail(
+                ".env.template carries a real-looking value",
+                f"key {key} must ship a placeholder, not a secret (value redacted)",
+            )
+        return False
+
+    print(
+        f"[CITE] credential audit: 0 credential paths tracked across {len(tracked)} files; "
+        f".env.template placeholders-only (DEL-02 / T-07-05..08)"
+    )
+    _ok("credential_audit gate: no committed secrets; .env.template is placeholders-only (exit 20 contract)")
+    return True
+
+
 def main() -> int:
     print(f"[INFO] Bronze+Silver+BQ+Graph ship-gate — running gates: {', '.join(GATES)}")
 
@@ -1471,6 +1588,14 @@ def main() -> int:
     # verify MEANS the use cases work — not just that the graph loaded.
     if not gate_uc_anti_degeneracy():
         return EXIT_UC_DEGENERATE
+
+    # --- Credential audit (20) — appended LAST. Offline + cheap, but placed after the
+    # 0..19 ladder so the live-touching gate order is UNCHANGED. Enforces the
+    # no-committed-secrets contract at the git-tracked -> public-GitHub (M4) boundary
+    # (DEL-02 / T-07-05): scans `git ls-files` for secret patterns + asserts
+    # .env.template placeholders-only. Prints offending PATHS only, never values.
+    if not gate_credential_audit():
+        return EXIT_CREDENTIAL_LEAK
 
     _ok(
         "all gates",
