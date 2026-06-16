@@ -12,7 +12,7 @@ BRONZE_BUCKET ?= gs://data-architecture-msds683-bronze
 PYTHON ?= python
 
 .PHONY: pull-ais pull-reference pull-priors generate load-bronze verify bronze conform derive silver \
-        ddl load-bq warehouse refreeze-sha256 load-arango verify-cluster verify-uc
+        ddl load-bq warehouse refreeze-sha256 load-arango verify-cluster verify-uc freeze
 
 # --- Warehouse config (Phase 5) ---
 BQ_PROJECT ?= data-architecture-msds683
@@ -51,6 +51,14 @@ verify:
 # (mirrors `make verify-cluster`). The DAG verify task also gates on the same logic.
 verify-uc:
 	$(PYTHON) -c "import sys; from scripts.verify import gate_uc_anti_degeneracy, EXIT_OK, EXIT_UC_DEGENERATE; sys.exit(EXIT_OK if gate_uc_anti_degeneracy() else EXIT_UC_DEGENERATE)"
+
+# --- freeze: freeze all four UC answers to committable data/golden/uc*.golden.json --
+# Reads live BigQuery (UC1/UC2 ADC) + the managed ArangoDB cluster (UC3/UC4 via the
+# credential-free snapshot runners), VALIDATES non-degeneracy (SUEZ reroute delta > 0,
+# GIBRALTAR reachability strictly drops), and writes byte-stable single-line goldens.
+# The Phase-7 (DEL-01) demo-safety layer the 07-03 notebook reads by default.
+freeze:
+	$(PYTHON) -m scripts.freeze_uc
 
 # --- Chained orchestrator: full Bronze pipeline in dependency order ---
 bronze: pull-reference pull-priors pull-ais generate load-bronze verify

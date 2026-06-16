@@ -7,7 +7,14 @@ samples/
 
 # Bulk pipeline data — AIS cache + synthetic JSONL; only synthetic.sha256 is committed
 # (the determinism manifest lands in a later plan). Threat T-03-01.
-data/
+data/*
+# ...but DO commit the frozen UC goldens (counts/floats/strings only, T-07-01 — the
+# Phase-7 demo-safety snapshots MUST be committable). A negation CANNOT re-include a
+# file under an excluded directory, so re-include each path component IN ORDER:
+# unignore the golden dir, re-exclude its contents, then allow only the *.golden.json.
+!data/golden/
+data/golden/*
+!data/golden/*.golden.json
 
 # Local credentials / config — no committed secrets (DEL-02 precedent, threats T-02-01 / T-03-01)
 .env

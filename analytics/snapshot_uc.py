@@ -65,18 +65,22 @@ def snapshot_uc3(db: Any = None) -> dict[str, Any]:
     to the runners; it is never inspected here (credential opacity, T-06-08).
     """
     share_rows = uc3_closure.run_transit_share(db=db)
-    transit_share = [
-        {
-            "chokepoint": str(r.get("chokepoint") or r.get("_key") or ""),
-            "transiting_lanes": int(r.get("transiting_lanes", 0) or 0),
-            "share_pct": (
-                round(float(r["share_pct"]), 12)
-                if r.get("share_pct") is not None
-                else None
-            ),
-        }
-        for r in share_rows
-    ]
+    transit_share = sorted(
+        (
+            {
+                "chokepoint": str(r.get("chokepoint") or r.get("_key") or ""),
+                "transiting_lanes": int(r.get("transiting_lanes", 0) or 0),
+                "total_lanes": int(r.get("total_lanes", 0) or 0),
+                "transit_share_pct": (
+                    round(float(r["transit_share_pct"]), 12)
+                    if r.get("transit_share_pct") is not None
+                    else None
+                ),
+            }
+            for r in share_rows
+        ),
+        key=lambda r: r["chokepoint"],
+    )
 
     impact = uc3_closure.run_reroute_impact(
         REROUTE_IMPACT_CHOKEPOINT, DEMO_ORIGIN, DEMO_DEST, db=db
