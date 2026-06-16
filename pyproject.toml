@@ -65,6 +65,15 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
+    # --- Phase 7 (DEL-01): notebook-execution toolchain for docs/demo.ipynb ---
+    # nbconvert + a Jupyter kernel (ipykernel) are the minimum to run
+    # `jupyter nbconvert --to notebook --execute` (the `make demo` target and
+    # gate_demo_notebook exit-21 ship-gate both shell to it). Widely-used
+    # PyPA-hosted packages (T-07-SC); unpinned (dev-only, not a determinism
+    # anchor — the Faker==/numpy== anchors in the main block stay EXACT).
+    "nbconvert",
+    "jupyter",
+    "ipykernel",
 ]
 
 [tool.hatch.build.targets.wheel]

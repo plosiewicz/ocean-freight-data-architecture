@@ -12,7 +12,7 @@ BRONZE_BUCKET ?= gs://data-architecture-msds683-bronze
 PYTHON ?= python
 
 .PHONY: pull-ais pull-reference pull-priors generate load-bronze verify bronze conform derive silver \
-        ddl load-bq warehouse refreeze-sha256 load-arango verify-cluster verify-uc freeze
+        ddl load-bq warehouse refreeze-sha256 load-arango verify-cluster verify-uc freeze demo
 
 # --- Warehouse config (Phase 5) ---
 BQ_PROJECT ?= data-architecture-msds683
@@ -59,6 +59,15 @@ verify-uc:
 # The Phase-7 (DEL-01) demo-safety layer the 07-03 notebook reads by default.
 freeze:
 	$(PYTHON) -m scripts.freeze_uc
+
+# --- demo: execute the four-UC demo notebook end-to-end (DEL-01) -------------------
+# Runs docs/demo.ipynb in place via nbconvert, proving it runs top-to-bottom from a
+# fresh clone with NO live credentials (the default cell path reads the frozen
+# data/golden/uc*.golden.json snapshots only). This is the failure-proof demo surface;
+# gate_demo_notebook (verify.py exit 21) executes the same notebook in CI. Needs the
+# dev extra: `pip install -e .[dev]` (nbconvert + a Jupyter kernel).
+demo:
+	jupyter nbconvert --to notebook --execute --inplace docs/demo.ipynb
 
 # --- Chained orchestrator: full Bronze pipeline in dependency order ---
 bronze: pull-reference pull-priors pull-ais generate load-bronze verify
