@@ -155,6 +155,49 @@ def build_port_vertices(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [build_port_vertex(r) for r in rows]
 
 
+# Port-city display labels for the synthetic foreign port vertices (graph-only
+# network scaffolding — these ports are NOT in BigQuery dim_port). Real US ports
+# carry their name from the conformed Silver dim and are never built here.
+_FOREIGN_PORT_NAMES: dict[str, str] = {
+    "CNSHA": "Shanghai",
+    "JPTYO": "Tokyo",
+    "DEHAM": "Hamburg",
+    "KRPUS": "Busan",
+    "NLRTM": "Rotterdam",
+}
+
+
+def build_foreign_port_vertices() -> list[dict[str, Any]]:
+    """Build the synthetic foreign-partner ``ports`` vertices (D-07 scaffolding).
+
+    One vertex per ``data_gen.network.FOREIGN_PORT`` with ``_key`` == UN/LOCODE,
+    ``lat``/``lon`` from :data:`_PORT_CENTROID_FALLBACK`, a port-city ``name``, and
+    ``provenance="synthetic"`` so they are distinguishable from the conformed real
+    US dim_port vertices (which carry ``provenance="real"`` from Silver — and which
+    this builder NEVER touches). Loading them is what lets a transoceanic
+    ``SHORTEST_PATH`` (e.g. USNYC->CNSHA) resolve instead of dangling to an unloaded
+    endpoint (06-VERIFICATION gap[1]). They are graph-only network structure (D-07),
+    NOT added to BigQuery dim_port, so the cross-store parity (gate 17) reconciles on
+    the REAL subset only. Order-stable (follows the fixed FOREIGN_PORTS order).
+    """
+    from data_gen.network import FOREIGN_PORTS
+
+    out: list[dict[str, Any]] = []
+    for code in FOREIGN_PORTS:
+        coords = _PORT_CENTROID_FALLBACK.get(code)
+        lat, lon = (coords if coords is not None else (None, None))
+        out.append(
+            {
+                "_key": code,
+                "name": _FOREIGN_PORT_NAMES.get(code, code),
+                "lat": lat,
+                "lon": lon,
+                "provenance": "synthetic",
+            }
+        )
+    return out
+
+
 def build_vessel_vertices(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Build ``vessels`` vertices; ``_key`` == IMO (the conformed natural key)."""
     out: list[dict[str, Any]] = []
@@ -259,6 +302,20 @@ def build_route_edge(
         "_key": lane_key(origin, dest),
         "_from": f"ports/{origin}",
         "_to": f"ports/{dest}",
+        # ``lane_key`` is written as a real EDGE ATTRIBUTE (== _key) so the
+        # UC3-reroute-impact / UC4 disabled-lane filters (``e.lane_key NOT IN
+        # @disabled_lanes``) bind to a non-null value — before this it was only the
+        # _key, so the filter compared a phantom-null attribute and the reroute
+        # delta was always 0 (06-VERIFICATION gap[0]).
+        "lane_key": lane_key(origin, dest),
+        # ``chokepoints`` are the D-09 rule-assigned chokepoints this lane transits,
+        # coerced to a list. This is the STRUCTURAL LINK joining the route subgraph
+        # (ports->ports) to the chokepoint subgraph: a closure can now resolve a
+        # closed chokepoint to the route edges (by lane_key) that transit it, or
+        # prune route legs whose chokepoints array contains the closed node. The
+        # rule is honored verbatim (chokepoints_for_lane) — MALACCA is correctly
+        # untransited by these US-trade lanes (documented-zero, not fabricated).
+        "chokepoints": list(chokepoints_for_lane(origin, dest)),
         "transit_time_hours": transit_time_hours,
         "distance_nm": distance_nm,
         "service_frequency": service_frequency,
@@ -512,14 +569,23 @@ def load_graph(bucket: str = BUCKET) -> dict[str, int]:
     vessel_rows = [r for r in _read_silver_dim(bucket, "silver/dim_vessel") if r.get("is_current", True)]
     carrier_rows = [r for r in _read_silver_dim(bucket, "silver/dim_carrier") if r.get("is_current", True)]
 
-    ports = build_port_vertices(port_rows)
+    real_ports = build_port_vertices(port_rows)
+    # Synthetic foreign-partner ports (D-07 scaffolding) so transoceanic route edges
+    # resolve their _from/_to and SHORTEST_PATH (USNYC->CNSHA) terminates. Tagged
+    # provenance=synthetic — distinct from the real US dims, additive to the SAME
+    # ``ports`` collection, never added to BigQuery dim_port (gate 17 reconciles on
+    # the real subset).
+    foreign_ports = build_foreign_port_vertices()
+    ports = real_ports + foreign_ports
     vessels = build_vessel_vertices(vessel_rows)
     carriers = build_carrier_vertices(carrier_rows)
     lanes = build_lane_vertices(LANES)
     chokepoints = build_chokepoint_vertices()
 
-    # Live port centroids from the conformed dim_port (real coords win over fallback).
-    port_coords = {p["_key"]: (p["lat"], p["lon"]) for p in ports if "lat" in p and "lon" in p}
+    # Live port centroids: real conformed dim_port coords win; the synthetic foreign
+    # ports supply their fallback centroids so the transoceanic transit-time estimate
+    # is computable for the full lane network.
+    port_coords = {p["_key"]: (p["lat"], p["lon"]) for p in ports if p.get("lat") is not None and p.get("lon") is not None}
 
     # --- Edges: synthetic priors-conditioned lane network ------------------- #
     # service_frequency from the schedules generator (LSCI priors); reliability/
