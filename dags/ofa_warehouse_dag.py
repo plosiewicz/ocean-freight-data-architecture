@@ -298,11 +298,24 @@ def ofa_warehouse():
 
     @task
     def verify(bucket: str) -> None:
-        """Assert the served facts populated (the gate detail lands in 05-04).
+        """Assert the served facts populated AND the UC use cases are non-degenerate.
 
-        Network-light sanity: query fact_voyage_leg row count via the BQ client and
-        fail loud if zero. The formal idempotency gate (re-run row-count stable) is
-        scripts/verify.py in Plan 04; here we wire the task + edge and assert > 0.
+        Two checks, both run only after BOTH sinks load (this task fans in on the BQ
+        loads AND load_arango — the Pitfall-5 guard):
+
+          1. Network-light BQ sanity: fact_voyage_leg row count > 0 (ETL-02).
+          2. UC non-degeneracy (06-07): invoke scripts.verify.gate_uc_anti_degeneracy,
+             which EXECUTES UC3 reroute-impact (SUEZ/PANAMA detour delta>0) + the
+             GIBRALTAR genuine-unreachability drop + the UC4 weighted reroute (delta>0)
+             against the managed ocean_network graph. This makes the green-but-hollow
+             failure impossible to ship via the pipeline too — a degenerate UC fails
+             the DAG here, not silently in a green gate. The import is INSIDE the task
+             body so the offline DagBag parse pulls in NO cluster module (mirrors
+             stage_conform / load_arango; tests/test_dag.py guards this).
+
+        The formal full idempotency ladder (re-run row-count stable, exit 12) lives in
+        scripts/verify.py `make verify`; here we wire the fact gate + the UC gate so
+        the pipeline cannot declare success while a UC is degenerate.
         """
         from google.cloud import bigquery
 
@@ -317,6 +330,19 @@ def ofa_warehouse():
                 f"verify: fact_voyage_leg has {n} rows (expected > 0) — load failed."
             )
         print(f"[INFO] verify: fact_voyage_leg has {n} rows (> 0, ETL-02 satisfied).")
+
+        # UC non-degeneracy gate (06-07) — the pipeline's recurrence guard. Connects
+        # to the managed cluster via the analytics facades' lazy get_db (env creds,
+        # TLS-on); prints only [CITE] counts, never credentials (T-06-01).
+        from scripts.verify import gate_uc_anti_degeneracy
+
+        if not gate_uc_anti_degeneracy():
+            raise AssertionError(
+                "verify: UC anti-degeneracy gate FAILED — UC3 reroute-impact / "
+                "GIBRALTAR fragmentation / UC4 reroute is degenerate (the green-but-"
+                "hollow failure). See [FAIL] hints above."
+            )
+        print("[INFO] verify: UC anti-degeneracy gate passed (UC3/UC4 non-degenerate, GRAPH-02/03).")
 
     # --- Topology: stage_conform >> loads >> (merges + overwrites) >> verify -----
     staged = stage_conform()

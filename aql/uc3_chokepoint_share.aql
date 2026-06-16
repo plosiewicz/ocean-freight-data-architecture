@@ -9,6 +9,9 @@
 // in the demo narrative are Suez / Panama / Malacca (D-09).
 // Paired with uc3_chokepoint_share.explain.txt (index-not-fullscan defense) —
 // generated against the live cluster via lib.graph_queries.explain (06-05).
+// NOTE (06-07 Rule-1 fix): ArangoDB's ROUND() takes a SINGLE argument (no precision
+// arg) — `ROUND(x, 1)` aborts with ERR 1541 on 3.12. To keep the 1-decimal share we
+// round the scaled value and divide back: ROUND(x * 10) / 10.
 FOR cp IN chokepoints
   LET n = LENGTH(FOR l IN INBOUND cp transits_chokepoint RETURN 1)
   LET total = LENGTH(lanes)
@@ -16,5 +19,5 @@ FOR cp IN chokepoints
     chokepoint: cp._key,
     transiting_lanes: n,
     total_lanes: total,
-    transit_share_pct: total == 0 ? 0 : ROUND(100.0 * n / total, 1)
+    transit_share_pct: total == 0 ? 0 : ROUND(1000.0 * n / total) / 10
   }

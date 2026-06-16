@@ -1,0 +1,875 @@
+{
+  "asyncPrefetchNodes": 0,
+  "collections": [
+    {
+      "name": "ports",
+      "type": "read"
+    },
+    {
+      "name": "route",
+      "type": "read"
+    }
+  ],
+  "estimatedCost": 319577.25377375435,
+  "estimatedNrItems": 100,
+  "isModificationQuery": false,
+  "nodes": [
+    {
+      "bindParameterVariables": {},
+      "dependencies": [],
+      "estimatedCost": 1,
+      "estimatedNrItems": 1,
+      "id": 1,
+      "type": "SingletonNode"
+    },
+    {
+      "dependencies": [
+        1
+      ],
+      "estimatedCost": 2,
+      "estimatedNrItems": 1,
+      "id": 26,
+      "subqueryOutVariable": {
+        "id": 5,
+        "isFullDocumentFromCollection": false,
+        "name": "4"
+      },
+      "type": "SubqueryStartNode"
+    },
+    {
+      "collectionToShard": {},
+      "defaultDirection": 2,
+      "dependencies": [
+        26
+      ],
+      "directions": [
+        2
+      ],
+      "edgeCollections": [
+        "route"
+      ],
+      "estimatedCost": 214946.25377375432,
+      "estimatedNrItems": 78125,
+      "forceOneShardAttributeValue": false,
+      "fromCondition": {
+        "subNodes": [
+          {
+            "excludesNull": false,
+            "subNodes": [
+              {
+                "name": "_from",
+                "subNodes": [
+                  {
+                    "id": 8,
+                    "name": "8",
+                    "subqueryReference": false,
+                    "type": "reference",
+                    "typeID": 45
+                  }
+                ],
+                "type": "attribute access",
+                "typeID": 35
+              },
+              {
+                "type": "value",
+                "typeID": 40,
+                "vTypeID": 4,
+                "value": ""
+              }
+            ],
+            "type": "compare ==",
+            "typeID": 25
+          }
+        ],
+        "type": "n-ary and",
+        "typeID": 62
+      },
+      "graph": [
+        "route"
+      ],
+      "id": 3,
+      "indexHint": {
+        "forced": false,
+        "lookahead": 1,
+        "type": "none"
+      },
+      "indexes": {
+        "base": [
+          {
+            "fields": [
+              "_from"
+            ],
+            "id": "1",
+            "name": "edge",
+            "selectivityEstimate": 0.17307692307692307,
+            "sparse": false,
+            "type": "edge",
+            "unique": false
+          }
+        ]
+      },
+      "isDisjoint": false,
+      "isLocalGraphNode": false,
+      "isSmart": false,
+      "isUsedAsSatellite": false,
+      "optimizedOutVariables": [],
+      "options": {
+        "algorithm": "",
+        "defaultWeight": 1000000000.0,
+        "maxDepth": 1,
+        "maxProjections": 5,
+        "minDepth": 1,
+        "parallelism": 1,
+        "produceVertices": true,
+        "type": "shortestPath",
+        "useCache": true,
+        "weightAttribute": "transit_time_hours"
+      },
+      "pathOutVariable": {
+        "id": 0,
+        "isFullDocumentFromCollection": false,
+        "name": "p"
+      },
+      "shortestPathType": "K_SHORTEST_PATHS",
+      "startVertexId": "ports/USNYC",
+      "targetVertexId": "ports/CNSHA",
+      "tmpIdNode": {
+        "type": "value",
+        "typeID": 40,
+        "vTypeID": 4,
+        "value": ""
+      },
+      "tmpObjVarNode": {
+        "id": 8,
+        "name": "8",
+        "subqueryReference": false,
+        "type": "reference",
+        "typeID": 45
+      },
+      "tmpObjVariable": {
+        "id": 8,
+        "isFullDocumentFromCollection": false,
+        "name": "8"
+      },
+      "toCondition": {
+        "subNodes": [
+          {
+            "excludesNull": false,
+            "subNodes": [
+              {
+                "name": "_to",
+                "subNodes": [
+                  {
+                    "id": 8,
+                    "name": "8",
+                    "subqueryReference": false,
+                    "type": "reference",
+                    "typeID": 45
+                  }
+                ],
+                "type": "attribute access",
+                "typeID": 35
+              },
+              {
+                "type": "value",
+                "typeID": 40,
+                "vTypeID": 4,
+                "value": ""
+              }
+            ],
+            "type": "compare ==",
+            "typeID": 25
+          }
+        ],
+        "type": "n-ary and",
+        "typeID": 62
+      },
+      "type": "EnumeratePathsNode",
+      "vertexCollections": [
+        "ports",
+        "route"
+      ]
+    },
+    {
+      "canThrow": false,
+      "dependencies": [
+        3
+      ],
+      "estimatedCost": 293071.25377375435,
+      "estimatedNrItems": 78125,
+      "expression": {
+        "name": "edges",
+        "subNodes": [
+          {
+            "id": 0,
+            "name": "p",
+            "subqueryReference": false,
+            "type": "reference",
+            "typeID": 45
+          }
+        ],
+        "type": "attribute access",
+        "typeID": 35
+      },
+      "expressionType": "attribute",
+      "id": 6,
+      "outVariable": {
+        "id": 9,
+        "isFullDocumentFromCollection": false,
+        "name": "9"
+      },
+      "type": "CalculationNode"
+    },
+    {
+      "dependencies": [
+        6
+      ],
+      "estimatedCost": 293271.25377375435,
+      "estimatedNrItems": 200,
+      "fullCount": false,
+      "id": 4,
+      "limit": 200,
+      "offset": 0,
+      "type": "LimitNode"
+    },
+    {
+      "dependencies": [
+        4
+      ],
+      "estimatedCost": 293471.25377375435,
+      "estimatedNrItems": 200,
+      "id": 28,
+      "subqueryOutVariable": {
+        "id": 3,
+        "isFullDocumentFromCollection": false,
+        "name": "2"
+      },
+      "type": "SubqueryStartNode"
+    },
+    {
+      "canThrow": false,
+      "dependencies": [
+        28
+      ],
+      "estimatedCost": 293671.25377375435,
+      "estimatedNrItems": 200,
+      "expression": {
+        "type": "value",
+        "typeID": 40,
+        "vTypeID": 1,
+        "value": true
+      },
+      "expressionType": "json",
+      "id": 25,
+      "outVariable": {
+        "id": 16,
+        "isFullDocumentFromCollection": false,
+        "name": "16"
+      },
+      "type": "CalculationNode"
+    },
+    {
+      "dependencies": [
+        25
+      ],
+      "estimatedCost": 318671.25377375435,
+      "estimatedNrItems": 20000,
+      "filter": {
+        "sorted": false,
+        "subNodes": [
+          {
+            "name": "lane_key",
+            "subNodes": [
+              {
+                "id": 1,
+                "name": "e",
+                "subqueryReference": false,
+                "type": "reference",
+                "typeID": 45
+              }
+            ],
+            "type": "attribute access",
+            "typeID": 35
+          },
+          {
+            "raw": [
+              "CNSHA__USNYC",
+              "CNSHA__USSAV",
+              "JPTYO__USNYC",
+              "JPTYO__USSAV",
+              "KRPUS__USNYC",
+              "KRPUS__USSAV",
+              "USNYC__CNSHA",
+              "USNYC__JPTYO",
+              "USNYC__KRPUS",
+              "USSAV__CNSHA",
+              "USSAV__JPTYO",
+              "USSAV__KRPUS"
+            ],
+            "sorted": true,
+            "type": "array",
+            "typeID": 41
+          }
+        ],
+        "type": "compare in",
+        "typeID": 31
+      },
+      "id": 7,
+      "inVariable": {
+        "id": 9,
+        "isFullDocumentFromCollection": false,
+        "name": "9"
+      },
+      "outVariable": {
+        "id": 1,
+        "isFullDocumentFromCollection": false,
+        "name": "e"
+      },
+      "type": "EnumerateListNode"
+    },
+    {
+      "dependencies": [
+        7
+      ],
+      "estimatedCost": 318871.25377375435,
+      "estimatedNrItems": 200,
+      "id": 29,
+      "inVariable": {
+        "id": 16,
+        "isFullDocumentFromCollection": false,
+        "name": "16"
+      },
+      "outVariable": {
+        "id": 3,
+        "isFullDocumentFromCollection": false,
+        "name": "2"
+      },
+      "type": "SubqueryEndNode"
+    },
+    {
+      "canThrow": false,
+      "dependencies": [
+        29
+      ],
+      "estimatedCost": 319071.25377375435,
+      "estimatedNrItems": 200,
+      "expression": {
+        "excludesNull": false,
+        "subNodes": [
+          {
+            "name": "LENGTH",
+            "subNodes": [
+              {
+                "subNodes": [
+                  {
+                    "id": 3,
+                    "name": "2",
+                    "subqueryReference": true,
+                    "type": "reference",
+                    "typeID": 45
+                  }
+                ],
+                "type": "array",
+                "typeID": 41
+              }
+            ],
+            "type": "function call",
+            "typeID": 47
+          },
+          {
+            "type": "value",
+            "typeID": 40,
+            "vTypeID": 2,
+            "value": 0
+          }
+        ],
+        "type": "compare ==",
+        "typeID": 25
+      },
+      "expressionType": "simple",
+      "id": 13,
+      "outVariable": {
+        "id": 12,
+        "isFullDocumentFromCollection": false,
+        "name": "12"
+      },
+      "type": "CalculationNode"
+    },
+    {
+      "dependencies": [
+        13
+      ],
+      "estimatedCost": 319271.25377375435,
+      "estimatedNrItems": 200,
+      "id": 14,
+      "inVariable": {
+        "id": 12,
+        "isFullDocumentFromCollection": false,
+        "name": "12"
+      },
+      "type": "FilterNode"
+    },
+    {
+      "dependencies": [
+        14
+      ],
+      "estimatedCost": 319272.25377375435,
+      "estimatedNrItems": 1,
+      "fullCount": false,
+      "id": 15,
+      "limit": 1,
+      "offset": 0,
+      "type": "LimitNode"
+    },
+    {
+      "dependencies": [
+        15
+      ],
+      "estimatedCost": 319273.25377375435,
+      "estimatedNrItems": 1,
+      "id": 27,
+      "inVariable": {
+        "id": 0,
+        "isFullDocumentFromCollection": false,
+        "name": "p"
+      },
+      "outVariable": {
+        "id": 5,
+        "isFullDocumentFromCollection": false,
+        "name": "4"
+      },
+      "type": "SubqueryEndNode"
+    },
+    {
+      "canThrow": false,
+      "dependencies": [
+        27
+      ],
+      "estimatedCost": 319274.25377375435,
+      "estimatedNrItems": 1,
+      "expression": {
+        "name": "FIRST",
+        "subNodes": [
+          {
+            "subNodes": [
+              {
+                "id": 5,
+                "name": "4",
+                "subqueryReference": true,
+                "type": "reference",
+                "typeID": 45
+              }
+            ],
+            "type": "array",
+            "typeID": 41
+          }
+        ],
+        "type": "function call",
+        "typeID": 47
+      },
+      "expressionType": "simple",
+      "id": 18,
+      "outVariable": {
+        "id": 6,
+        "isFullDocumentFromCollection": false,
+        "name": "best"
+      },
+      "type": "CalculationNode"
+    },
+    {
+      "canThrow": false,
+      "dependencies": [
+        18
+      ],
+      "estimatedCost": 319275.25377375435,
+      "estimatedNrItems": 1,
+      "expression": {
+        "subNodes": [
+          {
+            "id": 6,
+            "name": "best",
+            "subqueryReference": false,
+            "type": "reference",
+            "typeID": 45
+          },
+          {
+            "type": "value",
+            "typeID": 40,
+            "vTypeID": 0,
+            "value": null
+          }
+        ],
+        "type": "compare !=",
+        "typeID": 26
+      },
+      "expressionType": "simple",
+      "id": 19,
+      "outVariable": {
+        "id": 13,
+        "isFullDocumentFromCollection": false,
+        "name": "13"
+      },
+      "type": "CalculationNode"
+    },
+    {
+      "dependencies": [
+        19
+      ],
+      "estimatedCost": 319276.25377375435,
+      "estimatedNrItems": 1,
+      "id": 20,
+      "inVariable": {
+        "id": 13,
+        "isFullDocumentFromCollection": false,
+        "name": "13"
+      },
+      "type": "FilterNode"
+    },
+    {
+      "canThrow": false,
+      "dependencies": [
+        20
+      ],
+      "estimatedCost": 319277.25377375435,
+      "estimatedNrItems": 1,
+      "expression": {
+        "subNodes": [
+          {
+            "type": "value",
+            "typeID": 40,
+            "vTypeID": 2,
+            "value": 0
+          },
+          {
+            "subNodes": [
+              {
+                "name": "LENGTH",
+                "subNodes": [
+                  {
+                    "subNodes": [
+                      {
+                        "name": "vertices",
+                        "subNodes": [
+                          {
+                            "id": 6,
+                            "name": "best",
+                            "subqueryReference": false,
+                            "type": "reference",
+                            "typeID": 45
+                          }
+                        ],
+                        "type": "attribute access",
+                        "typeID": 35
+                      }
+                    ],
+                    "type": "array",
+                    "typeID": 41
+                  }
+                ],
+                "type": "function call",
+                "typeID": 47
+              },
+              {
+                "type": "value",
+                "typeID": 40,
+                "vTypeID": 2,
+                "value": 1
+              }
+            ],
+            "type": "minus",
+            "typeID": 21
+          }
+        ],
+        "type": "range",
+        "typeID": 49
+      },
+      "expressionType": "simple",
+      "id": 21,
+      "outVariable": {
+        "id": 14,
+        "isFullDocumentFromCollection": false,
+        "name": "14"
+      },
+      "type": "CalculationNode"
+    },
+    {
+      "dependencies": [
+        21
+      ],
+      "estimatedCost": 319377.25377375435,
+      "estimatedNrItems": 100,
+      "id": 22,
+      "inVariable": {
+        "id": 14,
+        "isFullDocumentFromCollection": false,
+        "name": "14"
+      },
+      "outVariable": {
+        "id": 7,
+        "isFullDocumentFromCollection": false,
+        "name": "i"
+      },
+      "type": "EnumerateListNode"
+    },
+    {
+      "canThrow": false,
+      "dependencies": [
+        22
+      ],
+      "estimatedCost": 319477.25377375435,
+      "estimatedNrItems": 100,
+      "expression": {
+        "subNodes": [
+          {
+            "name": "port",
+            "subNodes": [
+              {
+                "name": "_key",
+                "subNodes": [
+                  {
+                    "subNodes": [
+                      {
+                        "name": "vertices",
+                        "subNodes": [
+                          {
+                            "id": 6,
+                            "name": "best",
+                            "subqueryReference": false,
+                            "type": "reference",
+                            "typeID": 45
+                          }
+                        ],
+                        "type": "attribute access",
+                        "typeID": 35
+                      },
+                      {
+                        "id": 7,
+                        "name": "i",
+                        "subqueryReference": false,
+                        "type": "reference",
+                        "typeID": 45
+                      }
+                    ],
+                    "type": "indexed access",
+                    "typeID": 37
+                  }
+                ],
+                "type": "attribute access",
+                "typeID": 35
+              }
+            ],
+            "type": "object element",
+            "typeID": 43
+          },
+          {
+            "name": "leg_hours",
+            "subNodes": [
+              {
+                "subNodes": [
+                  {
+                    "excludesNull": false,
+                    "subNodes": [
+                      {
+                        "id": 7,
+                        "name": "i",
+                        "subqueryReference": false,
+                        "type": "reference",
+                        "typeID": 45
+                      },
+                      {
+                        "type": "value",
+                        "typeID": 40,
+                        "vTypeID": 2,
+                        "value": 0
+                      }
+                    ],
+                    "type": "compare ==",
+                    "typeID": 25
+                  },
+                  {
+                    "type": "value",
+                    "typeID": 40,
+                    "vTypeID": 2,
+                    "value": 0
+                  },
+                  {
+                    "name": "transit_time_hours",
+                    "subNodes": [
+                      {
+                        "subNodes": [
+                          {
+                            "name": "edges",
+                            "subNodes": [
+                              {
+                                "id": 6,
+                                "name": "best",
+                                "subqueryReference": false,
+                                "type": "reference",
+                                "typeID": 45
+                              }
+                            ],
+                            "type": "attribute access",
+                            "typeID": 35
+                          },
+                          {
+                            "subNodes": [
+                              {
+                                "id": 7,
+                                "name": "i",
+                                "subqueryReference": false,
+                                "type": "reference",
+                                "typeID": 45
+                              },
+                              {
+                                "type": "value",
+                                "typeID": 40,
+                                "vTypeID": 2,
+                                "value": 1
+                              }
+                            ],
+                            "type": "minus",
+                            "typeID": 21
+                          }
+                        ],
+                        "type": "indexed access",
+                        "typeID": 37
+                      }
+                    ],
+                    "type": "attribute access",
+                    "typeID": 35
+                  }
+                ],
+                "type": "ternary",
+                "typeID": 33
+              }
+            ],
+            "type": "object element",
+            "typeID": 43
+          }
+        ],
+        "type": "object",
+        "typeID": 42
+      },
+      "expressionType": "simple",
+      "id": 23,
+      "outVariable": {
+        "id": 15,
+        "isFullDocumentFromCollection": false,
+        "name": "15"
+      },
+      "type": "CalculationNode"
+    },
+    {
+      "count": true,
+      "dependencies": [
+        23
+      ],
+      "estimatedCost": 319577.25377375435,
+      "estimatedNrItems": 100,
+      "id": 24,
+      "inVariable": {
+        "id": 15,
+        "isFullDocumentFromCollection": false,
+        "name": "15"
+      },
+      "type": "ReturnNode"
+    }
+  ],
+  "rules": [
+    "move-calculations-up",
+    "move-filters-up",
+    "optimize-subqueries",
+    "move-calculations-up-2",
+    "move-filters-up-2",
+    "remove-unnecessary-calculations-2",
+    "move-calculations-down",
+    "move-filters-into-enumerate",
+    "splice-subqueries"
+  ],
+  "stats": {
+    "executionTime": 0.0030309090070659295,
+    "peakMemoryUsage": 32768,
+    "plansCreated": 1,
+    "rules": {},
+    "rulesExecuted": 79,
+    "rulesSkipped": 0
+  },
+  "variables": [
+    {
+      "id": 16,
+      "isFullDocumentFromCollection": false,
+      "name": "16"
+    },
+    {
+      "id": 15,
+      "isFullDocumentFromCollection": false,
+      "name": "15"
+    },
+    {
+      "id": 14,
+      "isFullDocumentFromCollection": false,
+      "name": "14"
+    },
+    {
+      "id": 13,
+      "isFullDocumentFromCollection": false,
+      "name": "13"
+    },
+    {
+      "id": 0,
+      "isFullDocumentFromCollection": false,
+      "name": "p"
+    },
+    {
+      "constantValue": 1,
+      "id": 11,
+      "isFullDocumentFromCollection": false,
+      "name": "11"
+    },
+    {
+      "id": 1,
+      "isFullDocumentFromCollection": false,
+      "name": "e"
+    },
+    {
+      "id": 12,
+      "isFullDocumentFromCollection": false,
+      "name": "12"
+    },
+    {
+      "id": 3,
+      "isFullDocumentFromCollection": false,
+      "name": "2"
+    },
+    {
+      "id": 5,
+      "isFullDocumentFromCollection": false,
+      "name": "4"
+    },
+    {
+      "id": 6,
+      "isFullDocumentFromCollection": false,
+      "name": "best"
+    },
+    {
+      "id": 7,
+      "isFullDocumentFromCollection": false,
+      "name": "i"
+    },
+    {
+      "id": 8,
+      "isFullDocumentFromCollection": false,
+      "name": "8"
+    },
+    {
+      "id": 9,
+      "isFullDocumentFromCollection": false,
+      "name": "9"
+    },
+    {
+      "id": 10,
+      "isFullDocumentFromCollection": false,
+      "name": "10"
+    }
+  ]
+}
