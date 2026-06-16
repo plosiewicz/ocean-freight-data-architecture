@@ -26,3 +26,9 @@ __pycache__/
 # Local Airflow runtime home — metadata DB + logs created by `make load-bq`
 # (`airflow dags test`). Never committed; regenerated on demand via `airflow db migrate`.
 .airflow/
+
+# Per-run criticality sidecar (gral|networkx path marker) — runtime, regenerated.
+analytics/.criticality_run_meta.json
+# ...but DO commit the credential-free frozen golden (counts/floats/strings only,
+# T-06-08 — the Phase-7 demo-safety artifact must be committable).
+!criticality.golden.json
