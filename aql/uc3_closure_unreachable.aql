@@ -1,37 +1,39 @@
-// UC3 (GRAPH-02) — reversible chokepoint closure -> reachability.
-// Closing a chokepoint is modelled as a FILTER that EXCLUDES the lanes whose
-// `transits_chokepoint` edge points at @closed, then recomputes per-origin
-// reachability over `ocean_network`. The closure is REVERSIBLE — it never drops
-// (wipes) a vertex or edge — so Suez / Panama / Malacca scenarios run
-// back-to-back without mutating (and corrupting) shared graph state (D-09,
-// threat T-06-07).
+// UC3 (GRAPH-02) — GENUINE-UNREACHABILITY under chokepoint closure.
+// RESERVED for chokepoints that TRULY FRAGMENT this topology — i.e. GIBRALTAR,
+// the only featured chokepoint whose closure leaves a port with NO alternative
+// route (Europe partners reach the US only through the Med approach in this
+// network). SUEZ / PANAMA / MALACCA do NOT fragment it (Far-East ports stay
+// reachable via the trans-Pacific lanes + US<->US proforma routes), so they are
+// answered by aql/uc3_reroute_impact.aql instead — NEVER by a hard-coded
+// "unreachable" assertion here (D-12 reframe).
 //
-// All UC params are AQL BIND variables (@closed, @maxhops) — user values are
-// NEVER string-interpolated into the query body (ASVS V5 / threat T-06-06).
+// Closing a chokepoint is modelled as a REVERSIBLE PRUNE over the `route` edge
+// collection: any route leg whose real `chokepoints` array contains @closed is not
+// traversable. The closure NEVER drops (REMOVEs) a vertex or edge (D-09 / threat
+// T-06-07) — Gibraltar / Suez scenarios run back-to-back without mutating the graph.
 //
-// Source: 06-RESEARCH.md Code Example 4 + Pattern 4 (verified syntax).
+// The traversal binds the EDGE variable (`FOR v, e`) and walks ONLY the `route`
+// edge collection (NOT the full named graph, which would also walk
+// calls_at / operates / transits_chokepoint and a phantom lane attribute). Reachability
+// is recomputed per origin port; comparing reachable_count to the baseline (run
+// with a non-existent @closed, or LENGTH(ports)) reveals true fragmentation.
 //
-// @closed   : a `chokepoints` vertex _key (e.g. "SUEZ" / "PANAMA" / "MALACCA")
-// @maxhops  : bounded traversal depth (keeps the supernode traversal cheap)
+// All UC params are AQL BIND variables (@closed, @maxhops) — user values are NEVER
+// string-interpolated (ASVS V5 / threat T-06-06).
 //
-// `closed_lanes` is the set of lane _keys transiting @closed; the per-origin
-// traversal then skips any lane vertex in that set (v.lane_key NOT IN
-// closed_lanes), so the reachable set shrinks exactly by the closure's effect.
-LET closed_lanes = (
-  FOR l IN INBOUND DOCUMENT('chokepoints', @closed) transits_chokepoint
-    RETURN l._key
-)
+// @closed   : a `chokepoints` vertex _key that genuinely fragments (e.g. "GIBRALTAR")
+// @maxhops  : bounded traversal depth (keeps the route traversal cheap)
 FOR origin IN ports
   LET reachable = (
-    FOR v IN 1..@maxhops OUTBOUND origin GRAPH 'ocean_network'
+    FOR v, e IN 1..@maxhops OUTBOUND origin route
       OPTIONS { bfs: true, uniqueVertices: 'global' }
-      FILTER v.lane_key == null OR v.lane_key NOT IN closed_lanes
+      PRUNE @closed IN e.chokepoints
+      FILTER e == null OR @closed NOT IN e.chokepoints
       RETURN DISTINCT v._key
   )
   RETURN {
     origin: origin._key,
     closed: @closed,
-    closed_lane_count: LENGTH(closed_lanes),
     reachable_count: LENGTH(reachable),
     reachable: reachable
   }

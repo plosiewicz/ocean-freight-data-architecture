@@ -47,3 +47,21 @@ def test_uc4_aql_uses_transit_time_weight_attribute():
         pytest.skip("aql/uc4_reroute_shortest_path.aql not authored yet (Wave 3)")
     src = _AQL_PATH.read_text()
     assert "weightAttribute: 'transit_time_hours'" in src
+
+
+def test_uc4_aql_disables_lanes_by_real_lane_key():
+    """The UC4 disabled-lane exclusion binds the REAL e.lane_key attribute (06-06)."""
+    if not _AQL_PATH.is_file():
+        pytest.skip("aql/uc4_reroute_shortest_path.aql not authored yet")
+    src = _AQL_PATH.read_text()
+    assert "e.lane_key NOT IN @disabled_lanes" in src
+
+
+def test_uc3_reroute_impact_aql_is_allow_listed_and_uses_route_shortest_path():
+    """The NEW uc3_reroute_impact query is allow-listed and reuses UC4 machinery."""
+    from lib import graph_queries
+
+    src = graph_queries.load_aql("uc3_reroute_impact")  # raises if not allow-listed
+    assert "SHORTEST_PATH" in src
+    assert "@disabled_lanes" in src
+    assert "route" in src  # restricted to the route edge collection

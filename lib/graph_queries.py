@@ -37,6 +37,7 @@ _AQL_DIR = _REPO_ROOT / "aql"
 _KNOWN_QUERIES = (
     "uc3_chokepoint_share",
     "uc3_closure_unreachable",
+    "uc3_reroute_impact",
     "uc4_reroute_shortest_path",
 )
 
@@ -95,6 +96,29 @@ def closed_lane_keys(
     map is never mutated, D-09 / threat T-06-07).
     """
     return [lane for lane, choke in transits.items() if choke == chokepoint]
+
+
+def disabled_lane_keys_for_chokepoint(
+    lanes: Iterable[tuple[str, str]],
+    rule,
+    chokepoint: str,
+) -> list[str]:
+    """Resolve a closed ``chokepoint`` to the route-edge ``lane_key``s transiting it.
+
+    The pure mirror of the live UC3-reroute-impact / closure binding: over the
+    canonical directed port-pair network (``data_gen.network.LANES`` /
+    ``US_US_LANES``) and the deterministic geographic ``rule``
+    (``lib.graph_loader.chokepoints_for_lane``), a lane transits ``chokepoint`` iff
+    ``chokepoint`` is in its rule result. The returned ``f"{origin}__{dest}"`` keys
+    are exactly the values written as the route edge ``lane_key`` attribute (the
+    shared bridge), so the offline ``@disabled_lanes`` set mirrors the live one
+    (D-09 / D-12). Order-stable (follows ``lanes`` order).
+    """
+    return [
+        f"{origin}__{dest}"
+        for (origin, dest) in lanes
+        if chokepoint in rule(origin, dest)
+    ]
 
 
 def reachable_lane_count(
