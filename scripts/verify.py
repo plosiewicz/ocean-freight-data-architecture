@@ -76,6 +76,7 @@ GATES: tuple[str, ...] = (
     "xstore_semantic",
     "uc_anti_degeneracy",
     "credential_audit",
+    "demo_notebook",
 )
 
 # Bronze exit codes (UNCHANGED — 0..4).
@@ -133,6 +134,16 @@ EXIT_UC_DEGENERATE: int = 19
 # On a violation it prints the offending tracked PATH only — never the matched secret
 # value (threat T-07-08, reuse the _fail label idiom).
 EXIT_CREDENTIAL_LEAK: int = 20
+
+# Demo-notebook exit code (NEW — exit 21, the next free code after the 0..20 ladder;
+# codes 0..20 are UNCHANGED). This gate (DEL-01 / threat T-07-11) re-executes
+# docs/demo.ipynb end-to-end via `jupyter nbconvert --execute` in a credential-free
+# subprocess and asserts exit 0 — proving the four-UC demo runs clean from the frozen
+# data/golden/ snapshots (so committed cell outputs cannot silently drift from the
+# goldens). It is appended LAST so the live-touching 16..19 ladder + the offline
+# credential gate (20) are unchanged. If nbconvert is unavailable it _fails with a
+# `pip install -e .[dev]` hint rather than silently passing.
+EXIT_NOTEBOOK: int = 21
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SHA256_FILE = REPO_ROOT / "synthetic.sha256"
@@ -1530,6 +1541,77 @@ def gate_credential_audit() -> bool:
     return True
 
 
+# --- Demo notebook gate (exit 21) ----------------------------------------- #
+DEMO_NOTEBOOK = REPO_ROOT / "docs" / "demo.ipynb"
+
+
+def gate_demo_notebook() -> bool:
+    """Re-execute docs/demo.ipynb credential-free and assert clean exit (DEL-01).
+
+    Runs `jupyter nbconvert --to notebook --execute --stdout docs/demo.ipynb` in a
+    subprocess with the live-credential env vars STRIPPED (ARANGO_* / GOOGLE_* /
+    COMTRADE_API_KEY) so the notebook can only take its default frozen-snapshot path
+    (data/golden/uc*.golden.json). A non-zero exit means a cell errored — committed
+    outputs have drifted from the goldens or a snapshot is missing (T-07-11); _fail
+    and return False so main() exits EXIT_NOTEBOOK (21). If nbconvert is not installed
+    the gate _fails with a `pip install -e .[dev]` hint (it never silently passes).
+    """
+    if not DEMO_NOTEBOOK.exists():
+        _fail("demo notebook missing", f"expected {DEMO_NOTEBOOK} (DEL-01 artifact)")
+        return False
+
+    # Strip live creds so the run cannot accidentally take the optional live path.
+    import os
+
+    env = {k: v for k, v in os.environ.items()}
+    for key in list(env):
+        if key.startswith(("ARANGO_", "GOOGLE_")) or key == "COMTRADE_API_KEY":
+            env.pop(key, None)
+
+    cmd = [
+        "jupyter",
+        "nbconvert",
+        "--to",
+        "notebook",
+        "--execute",
+        "--stdout",
+        str(DEMO_NOTEBOOK),
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+    except FileNotFoundError:
+        _fail(
+            "jupyter/nbconvert not installed",
+            "the demo gate needs the dev extra — run `pip install -e .[dev]`",
+        )
+        return False
+
+    if result.returncode != 0:
+        # Surface the failing cell/error tail (stderr carries the traceback).
+        tail = (result.stderr or result.stdout or "").strip().splitlines()
+        snippet = "\n  ".join(tail[-12:]) if tail else "no output"
+        _fail(
+            "demo notebook execution failed",
+            f"`jupyter nbconvert --execute docs/demo.ipynb` exited {result.returncode}; "
+            f"cell error (last lines):\n  {snippet}",
+        )
+        return False
+
+    print(
+        "[CITE] demo.ipynb executed clean (frozen-snapshot path): four-UC demo runs "
+        "top-to-bottom credential-free from data/golden/ (DEL-01 / T-07-11)"
+    )
+    _ok("demo_notebook gate: docs/demo.ipynb executes to clean exit, no live creds (exit 21 contract)")
+    return True
+
+
 def main() -> int:
     print(f"[INFO] Bronze+Silver+BQ+Graph ship-gate — running gates: {', '.join(GATES)}")
 
@@ -1596,6 +1678,14 @@ def main() -> int:
     # .env.template placeholders-only. Prints offending PATHS only, never values.
     if not gate_credential_audit():
         return EXIT_CREDENTIAL_LEAK
+
+    # --- Demo notebook (21) — appended LAST. Re-executes docs/demo.ipynb credential-free
+    # via nbconvert and asserts clean exit, proving the four-UC demo (DEL-01) runs
+    # top-to-bottom from the frozen data/golden/ snapshots — so committed cell outputs
+    # cannot silently drift from the goldens (T-07-11). Placed after the 0..20 ladder so
+    # every prior gate's order is UNCHANGED.
+    if not gate_demo_notebook():
+        return EXIT_NOTEBOOK
 
     _ok(
         "all gates",
