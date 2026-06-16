@@ -23,12 +23,46 @@ def _import_xstore():
 
 
 def test_count_parity_passes_on_equal_counts():
-    """Equal BQ dim rows and Arango vertex counts reconcile (parity OK)."""
+    """Equal BQ dim rows and Arango REAL-subset vertex counts reconcile (parity OK).
+
+    06-06: synthetic foreign ports are additive in the `ports` collection, so gate 17
+    feeds the REAL-provenance vertex count (4 US ports), NOT the raw collection count.
+    Parity stays EXACT equality on the shared real subset.
+    """
     xs = _import_xstore()
-    pairs = [("dim_port", 9, "ports", 9), ("dim_vessel", 1545, "vessels", 1545)]
+    pairs = [("dim_port", 4, "ports", 4), ("dim_vessel", 1545, "vessels", 1545)]
     ok, mismatches = xs.check_count_parity(pairs)
     assert ok is True
     assert mismatches == []
+
+
+def test_count_parity_passes_when_raw_ports_larger_but_real_subset_matches():
+    """Parity PASSES when BQ dim_port == real ports vertices even though the raw
+    `ports` collection is larger (synthetic foreign ports present) — the gate counts
+    the real subset, so the additive synthetic ports are correctly excluded."""
+    xs = _import_xstore()
+    # The gate already filtered to provenance=real (4); the raw collection is 9.
+    real_port_vertices = 4
+    pairs = [("dim_port", 4, "ports", real_port_vertices)]
+    ok, mismatches = xs.check_count_parity(pairs)
+    assert ok is True
+    assert mismatches == []
+
+
+def test_count_parity_fails_when_a_real_port_is_dropped_or_duplicated():
+    """Parity still FAILS (bridge broken) if a REAL port is dropped or duplicated,
+    independent of the additive synthetic foreign ports."""
+    xs = _import_xstore()
+    # A real port dropped: BQ has 4, real vertices only 3.
+    dropped = [("dim_port", 4, "ports", 3)]
+    ok, mismatches = xs.check_count_parity(dropped)
+    assert ok is False
+    assert any("dim_port" in m and "ports" in m for m in mismatches)
+    # A real port duplicated: BQ has 4, real vertices 5.
+    dup = [("dim_port", 4, "ports", 5)]
+    ok2, mismatches2 = xs.check_count_parity(dup)
+    assert ok2 is False
+    assert any("dim_port" in m for m in mismatches2)
 
 
 def test_count_parity_flags_mismatch():

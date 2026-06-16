@@ -1041,8 +1041,12 @@ def gate_xstore_count_parity() -> bool:
     """BQ dim row counts == Arango vertex counts on the shared keys (D-11, exit 17).
 
     For each (dim, vertex) pair the BigQuery row count (CURRENT rows only for the
-    SCD2 dims) must equal the ArangoDB vertex collection count — the UN/LOCODE / IMO
-    / SCAC bridge makes the correspondence 1:1. Delegates the compare to
+    SCD2 dims) must equal the ArangoDB vertex count — the UN/LOCODE / IMO / SCAC
+    bridge makes the correspondence 1:1. For ``ports`` the comparison is on the
+    REAL subset (provenance=='real') because the `ports` collection now also holds
+    the additive synthetic foreign port vertices (06-06) that are NOT in BigQuery
+    dim_port; excluding them by provenance is precise, not a relaxation — the check
+    stays EXACT equality (SC4 unweakened). Delegates the compare to
     ``scripts.xstore.check_count_parity`` (the offline-tested pure logic). PRINTs a
     ``[CITE]`` parity line per dim citing the shared key.
     """
@@ -1062,7 +1066,23 @@ def gate_xstore_count_parity() -> bool:
             bq_count = int(
                 _bq_scalar(client, f"SELECT COUNT(*) FROM `{BQ_PROJECT}.{BQ_DATASET}.{dim}`{where}")
             )
-            gr_count = int(db.collection(vtx).count())
+            if vtx == "ports":
+                # 06-06: the `ports` collection now also holds the synthetic foreign
+                # port vertices (graph-only network scaffolding, NOT in BigQuery
+                # dim_port). Reconcile on the shared REAL subset (provenance=='real')
+                # so parity stays "every Silver dim_port == its real graph vertex"
+                # (SC4 meaning preserved, exact equality unweakened). The provenance
+                # value is an AQL BIND variable — never f-string-interpolated
+                # (threat T-06-06 / ASVS V5).
+                cursor = db.aql.execute(
+                    "RETURN LENGTH(FOR p IN ports "
+                    "FILTER p.provenance == @prov RETURN 1)",
+                    bind_vars={"prov": "real"},
+                )
+                gr_count = int(list(cursor)[0])
+            else:
+                # vessels / carriers add no synthetic vertices -> full-collection count.
+                gr_count = int(db.collection(vtx).count())
             pairs.append((dim, bq_count, vtx, gr_count))
     except Exception as exc:  # noqa: BLE001
         _fail("xstore_count_parity: count query failed", str(exc))
@@ -1075,8 +1095,9 @@ def gate_xstore_count_parity() -> bool:
         return False
 
     for dim, bq_count, vtx, gr_count in pairs:
+        subset = " (real subset)" if vtx == "ports" else ""
         print(
-            f"[CITE] Cross-store parity: {dim}={bq_count:,} == {vtx}={gr_count:,} "
+            f"[CITE] Cross-store parity: {dim}={bq_count:,} == {vtx}{subset}={gr_count:,} "
             f"(UN/LOCODE/IMO/SCAC shared-key bridge, D-11)"
         )
     _ok("xstore_count_parity gate: every conformed dim reconciles 1:1 with its graph vertex set")
