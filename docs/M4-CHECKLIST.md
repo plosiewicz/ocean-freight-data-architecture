@@ -51,6 +51,12 @@ and Python/Airflow runtime artifacts.
 - [x] The synthetic-data reproducibility proof (`make generate` → `make verify` →
   matching `synthetic.sha256`) is **fully local** — it touches neither cloud. See
   [`RUN-FROM-CLONE.md`](RUN-FROM-CLONE.md).
+- [x] **Recorded backup video: not produced — the live notebook demo is the demo of
+  record (user decision).** The frozen-snapshot notebook run (`make demo`) is
+  itself can't-fail-live (no creds, no network), so a separate recording is not
+  required for DEL-01. The capture procedure remains documented in
+  [`07-RECORD-BACKUP.md`](07-RECORD-BACKUP.md) for anyone who wants to record one
+  later.
 
 ### Optional LIVE path — reviewer-supplied credentials
 

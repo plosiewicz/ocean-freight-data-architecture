@@ -1,5 +1,14 @@
 # Recorded Backup — Can't-Fail-Live Demo Fallback (DEL-01)
 
+> **STATUS (2026-06-16) — RECORDED BACKUP INTENTIONALLY NOT PRODUCED.**
+> Per the user's decision, no recorded backup video/`.cast` is being produced.
+> The **demo of record satisfying DEL-01 is the live working demo notebook**
+> (`docs/demo.ipynb`, run via `make demo`), which executes end-to-end against the
+> committed frozen `data/golden/uc*.golden.json` snapshots — no credentials, no
+> network — and so is itself can't-fail-live. The capture procedure below is
+> retained **as documentation** for anyone who wants to record a backup later; it
+> is not a pending action item.
+
 > **Front-loaded manual step (human checkpoint).** This is the recorded-backup
 > capture procedure for the final presentation. Like the `make verify-cluster`
 > connection-smoke check, **the agent cannot perform this step** — *you* run the
