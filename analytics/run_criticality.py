@@ -80,6 +80,16 @@ PROJECTION_NAME: str = "ocean_network_lane_projection"
 TARGET_COLLECTION: str = "chokepoints"
 CRITICALITY_ATTR: str = "criticality"
 
+# gral ``storeresults`` write-back target. CRITICAL (Rule 1 fix, 06-05): gral
+# storeresults on an AQL-projection-loaded graph writes the SYNTHETIC vertex id
+# (``ports/<UNLOCODE>``) as a ``_key``, which ArangoDB URL-encodes to
+# ``ports%2F<UNLOCODE>`` — polluting whatever target collection it is pointed at.
+# Pointing it at the CONFORMED ``ports`` vertex collection corrupts the cross-store
+# count-parity (dim_port rows != ports vertices, gate 17). Point it at a dedicated
+# DISPOSABLE scratch collection that is NOT a conformed vertex set, so the readback
+# count still proves whether gral persisted, without touching the graph projection.
+GRAL_STORE_TARGET: str = "_gral_criticality_scratch"
+
 # --- gral engine endpoints (ported VERBATIM from run_gae.py) -------------
 GRAL_INSTALL_PATH: str = "/_platform/acp/v1/graphanalytics"
 SERVICE_ID_PREFIX: str = "arangodb-gral-"
@@ -335,7 +345,7 @@ def submit_gral_centrality(cfg: dict, jwt: str) -> tuple[str, str, int]:
     return full_service_id, short, int(job_id_raw)
 
 
-def store_and_count(cfg: dict, jwt: str, short_id: str, job_id: int) -> int:
+def store_and_count(db, cfg: dict, jwt: str, short_id: str, job_id: int) -> int:
     """Persist the centrality result via gral ``storeresults`` and report how
     many docs it actually wrote.
 
@@ -347,9 +357,15 @@ def store_and_count(cfg: dict, jwt: str, short_id: str, job_id: int) -> int:
     write-back document count (0 -> NetworkX fallback).
     """
     base = cfg["url"].rstrip("/")
+    # Write into a disposable scratch collection, NEVER the conformed ``ports``
+    # vertex set (Rule 1 fix, 06-05): gral keys the write-back by the synthetic
+    # vertex id (URL-encoded ``ports%2F<UNLOCODE>``), which would otherwise pollute
+    # the conformed ports vertices and break cross-store count-parity (gate 17).
+    if not db.has_collection(GRAL_STORE_TARGET):
+        db.create_collection(GRAL_STORE_TARGET)
     store_spec = {
         "database": cfg["database"],
-        "target_collection": "ports",
+        "target_collection": GRAL_STORE_TARGET,
         "job_ids": [int(job_id)],
         "attribute_names": [GRAL_RESULT_ATTR],
     }
@@ -426,9 +442,13 @@ def _chokepoint_criticality(
         total = 0.0
         for lane_key in sorted(choke_lanes[choke]):
             # lane _key is "ORIGIN__DEST"; credit both endpoint ports' centrality.
+            # ``edge_scores`` is keyed by the full document id (``_from``/``_to`` =
+            # ``ports/<UNLOCODE>``), so look the port betweenness up by the SAME
+            # prefixed id, not the bare UN/LOCODE — else every lookup misses and all
+            # chokepoints score 0 (Rule 1 bug found live in 06-05).
             parts = lane_key.split("__")
             for port in sorted(parts):
-                total += float(edge_scores.get(port, 0.0))
+                total += float(edge_scores.get(f"ports/{port}", 0.0))
         out[choke] = round(total, 12)
     return out
 
@@ -493,7 +513,7 @@ def run_gral_or_networkx(db, cfg: dict, jwt: str) -> dict:
         _info(f"gral betweenness submitted: short_id={short} job_id={job}")
         poll_gral_job(cfg, jwt, short, job, GRAL_TIMEOUT_SEC)
         gral_compute_verified = True
-        written = store_and_count(cfg, jwt, short, job)
+        written = store_and_count(db, cfg, jwt, short, job)
         if written and written > 0:
             path = "gral"
             _ok(f"gral storeresults landed: {written} docs")

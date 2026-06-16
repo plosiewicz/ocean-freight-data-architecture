@@ -34,6 +34,7 @@ weights). Edge definitions are NOT re-decided here — they are copied forward.
 
 from __future__ import annotations
 
+import datetime as _dt
 import io
 from typing import Any
 
@@ -117,6 +118,22 @@ _PORT_CENTROID_FALLBACK: dict[str, tuple[float, float]] = {
 # --------------------------------------------------------------------------- #
 # Pure row builders — deterministic, side-effect-free, OFFLINE-testable.       #
 # --------------------------------------------------------------------------- #
+def _json_safe(val: Any) -> Any:
+    """Coerce a Silver column value to a JSON-serializable form for the Arango sink.
+
+    The SCD2 dims (``dim_vessel`` / ``dim_carrier``) carry ``effective_from`` /
+    ``effective_to`` as BigQuery/Parquet DATE columns, which ``pyarrow.Table.to_pylist``
+    materializes as :class:`datetime.date` / :class:`datetime.datetime` — python-arango's
+    JSON serializer raises ``TypeError: Object of type date is not JSON serializable`` on
+    these. Coerce date/datetime to a stable ISO-8601 string (the value is preserved, not
+    dropped — the vertex stays a faithful projection of the conformed dim) and leave all
+    other types untouched. Deterministic (no ``now()``), so the offline builders stay pure.
+    """
+    if isinstance(val, (_dt.date, _dt.datetime)):
+        return val.isoformat()
+    return val
+
+
 def build_port_vertex(row: dict[str, Any]) -> dict[str, Any]:
     """Build one ``ports`` vertex; ``_key`` == the conformed UN/LOCODE (D-11).
 
@@ -129,7 +146,7 @@ def build_port_vertex(row: dict[str, Any]) -> dict[str, Any]:
     for col, val in row.items():
         if col == "unlocode":
             continue
-        vtx[col] = val
+        vtx[col] = _json_safe(val)
     return vtx
 
 
@@ -147,7 +164,7 @@ def build_vessel_vertices(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for col, val in row.items():
             if col == "imo":
                 continue
-            vtx[col] = val
+            vtx[col] = _json_safe(val)
         out.append(vtx)
     return out
 
@@ -161,7 +178,7 @@ def build_carrier_vertices(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for col, val in row.items():
             if col == "scac":
                 continue
-            vtx[col] = val
+            vtx[col] = _json_safe(val)
         out.append(vtx)
     return out
 
