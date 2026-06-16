@@ -1,0 +1,32 @@
+// UC4 (GRAPH-03) — weighted SHORTEST_PATH reroute.
+// Baseline: the time-optimal path @origin -> @dest over `ocean_network`, weighted
+// by each route edge's `transit_time_hours`. Re-run the SAME query with
+// @disabled_lanes excluded (the D-09 reversible-closure mechanism) to obtain the
+// reroute path; the reroute delta = SUM(reroute leg_hours) - SUM(baseline
+// leg_hours) is computed in Python (lib.graph_queries.reroute_delta, D-10).
+//
+// The UC4 reliability/duration weight (`transit_time_hours`) is the SAME signal
+// the warehouse uses for UC1 reliability (D-08 coherence).
+//
+// All UC params are AQL BIND variables (@origin, @dest, @disabled_lanes) — never
+// string-interpolated (ASVS V5 / threat T-06-06).
+//
+// NOTE: SHORTEST_PATH does NOT support negative edge weights (the query aborts on
+// one); `transit_time_hours` is a non-negative duration, and defaultWeight: 1e9
+// makes any weightless edge effectively unusable (so it is never chosen unless it
+// is the only path), keeping the weighted optimisation well-defined.
+//
+// Source: docs.arangodb.com/3.12 SHORTEST_PATH (CITED) + supply-chain/aql/
+// uc4_rebalance.aql; 06-RESEARCH.md Code Example 3 + 06-PATTERNS.md.
+// Paired with uc4_reroute_shortest_path.explain.txt (index-not-fullscan defense).
+//
+// @origin         : source port vertex id (e.g. "ports/USNYC")
+// @dest           : target port vertex id (e.g. "ports/CNSHA")
+// @disabled_lanes : list of lane _keys to exclude for the reroute leg ([] = baseline)
+FOR v, e IN OUTBOUND SHORTEST_PATH @origin TO @dest GRAPH 'ocean_network'
+  OPTIONS { weightAttribute: 'transit_time_hours', defaultWeight: 1e9 }
+  FILTER e == null OR e.lane_key == null OR e.lane_key NOT IN @disabled_lanes
+  RETURN {
+    port: v._key,
+    leg_hours: e == null ? 0 : e.transit_time_hours
+  }

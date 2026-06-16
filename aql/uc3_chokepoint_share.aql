@@ -1,0 +1,20 @@
+// UC3 (GRAPH-02) — chokepoint transit-share.
+// For each chokepoint vertex, count the INBOUND `transits_chokepoint` lanes and
+// return its share of the total lane population as a percentage. This answers
+// "how much of the global lane network depends on each chokepoint?" — the
+// exposure half of UC3 (the closure half is uc3_closure_unreachable.aql).
+//
+// Source: 06-RESEARCH.md Code Example 4 + 06-PATTERNS.md "uc3_*.aql".
+// No bind variables are required (whole-graph aggregate); featured chokepoints
+// in the demo narrative are Suez / Panama / Malacca (D-09).
+// Paired with uc3_chokepoint_share.explain.txt (index-not-fullscan defense) —
+// generated against the live cluster via lib.graph_queries.explain (06-05).
+FOR cp IN chokepoints
+  LET n = LENGTH(FOR l IN INBOUND cp transits_chokepoint RETURN 1)
+  LET total = LENGTH(lanes)
+  RETURN {
+    chokepoint: cp._key,
+    transiting_lanes: n,
+    total_lanes: total,
+    transit_share_pct: total == 0 ? 0 : ROUND(100.0 * n / total, 1)
+  }
