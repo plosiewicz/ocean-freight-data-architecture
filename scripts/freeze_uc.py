@@ -264,7 +264,11 @@ def main(argv: list[str] | None = None) -> int:
     for uc in selected:
         code = freeze_one(uc)
         if code != EXIT_OK:
-            worst = code  # fail-fast on the most severe; keep the worst code
+            # Run every selected UC (not fail-fast), but keep the MOST-SEVERE
+            # code: severity rises with the EXIT_* value (FAIL=1 < EMPTY=2 <
+            # CLUSTER_UNREACHABLE=3), so max() preserves the worst signal for a
+            # branching caller (Make/CI), matching the documented ladder.
+            worst = max(worst, code)
             _info(f"{uc}: NOT frozen (exit {code}) — existing golden left untouched")
     if worst == EXIT_OK:
         _info("commit subject: golden(lock): freeze uc1..uc4")
