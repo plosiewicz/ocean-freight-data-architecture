@@ -71,6 +71,9 @@ GATES: tuple[str, ...] = (
     "bq_idempotency",
     "uc1_nonnull",
     "uc2_trend",
+    "graph_load",
+    "xstore_count_parity",
+    "xstore_semantic",
 )
 
 # Bronze exit codes (UNCHANGED — 0..4).
@@ -97,6 +100,17 @@ EXIT_BQ_IDEMPOTENCY_DRIFT: int = 12
 EXIT_BQ_PARTITION_CLUSTER: int = 13
 EXIT_UC1_NO_ROWS: int = 14
 EXIT_UC2_NO_TREND: int = 15
+
+# Graph + cross-store exit codes (NEW — distinct, continuing the sequence 16..18).
+# These are the ETL-05 reconciliation gates. They run AFTER the 0..15 Bronze/Silver/BQ
+# gates (Pitfall 5: a cross-store check must run only once BOTH sinks have loaded — the
+# DAG verify task likewise fans in on BQ loads AND load_arango). They are the most
+# expensive gates (they touch BOTH the managed ArangoDB cluster AND BigQuery) and are
+# therefore last in the fail-fast ladder. Bronze 0..4 / Silver 5..10 / BQ 11..15 stay
+# UNCHANGED.
+EXIT_GRAPH_LOAD: int = 16  # ocean_network graph / collections absent or empty
+EXIT_XSTORE_COUNT_PARITY: int = 17  # dim rows != vertex counts (shared-key mismatch)
+EXIT_XSTORE_SEMANTIC: int = 18  # Suez-transiting-leg counts don't reconcile BQ<->Arango
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SHA256_FILE = REPO_ROOT / "synthetic.sha256"
@@ -937,8 +951,221 @@ def gate_uc2_trend() -> bool:
     return True
 
 
+# --------------------------------------------------------------------------- #
+# Graph + cross-store gates (exit codes 16..18) — reconcile the two sinks        #
+# (ETL-05). Connect to the managed ArangoDB cluster ONLY via lib.arango_client   #
+# (env creds, TLS-on); print only counts + [CITE] lines, never credentials       #
+# (threat T-06-01b). The reconciliation LOGIC lives in scripts.xstore (pure,     #
+# offline-tested); these gates only fetch live counts and delegate the compare.  #
+# --------------------------------------------------------------------------- #
+
+# The LOCKED named graph + collection set (mirrors lib.graph_loader — DO NOT
+# re-decide here). The graph-load gate asserts each exists and is non-empty.
+GRAPH_NAME = "ocean_network"
+GRAPH_VERTEX_COLLECTIONS = ("ports", "vessels", "carriers", "lanes", "chokepoints")
+GRAPH_EDGE_COLLECTIONS = ("route", "calls_at", "operates", "transits_chokepoint")
+# (dim_name, vertex_collection, is_scd2) for the count-parity bridge. The SCD2 dims
+# (dim_vessel/dim_carrier) count CURRENT rows only — the graph projects is_current
+# vertices (lib.graph_loader filters is_current), so the BQ side must match.
+XSTORE_DIM_VERTEX_PAIRS = (
+    ("dim_port", "ports", False),
+    ("dim_vessel", "vessels", True),
+    ("dim_carrier", "carriers", True),
+)
+
+
+def _arango_db():
+    """Lazy-connect to the managed ArangoDB cluster via lib.arango_client (TLS-on).
+
+    Returns a python-arango DB handle or ``None`` on an import/credentials/connect
+    failure (the caller fails the gate gracefully — no uncaught traceback, no creds
+    in the message; threat T-06-01b). A larger request_timeout is used because the
+    cross-store reconciliation issues whole-collection counts / a chokepoint traversal.
+    """
+    try:
+        from lib.arango_client import MissingCredentialsError, get_db
+    except Exception as exc:  # noqa: BLE001
+        _fail("graph: lib.arango_client unavailable", str(exc))
+        return None
+    try:
+        db = get_db(request_timeout=120)
+        db.version()  # force the lazy connection so a bad URL/creds fails HERE
+        return db
+    except MissingCredentialsError as exc:
+        _fail("graph: ARANGO_* credentials missing", str(exc))
+        return None
+    except Exception as exc:  # noqa: BLE001
+        _fail("graph: managed cluster unreachable (check .env URL / TLS)", str(exc))
+        return None
+
+
+def gate_graph_load() -> bool:
+    """Assert the ocean_network named graph + 5 vertex + 4 edge collections exist
+    and are NON-EMPTY (the load_arango sink actually ran — ETL-05 sink #2).
+
+    PRINTs a ``[CITE]`` per-collection count line for the deck. Fails (16) if the
+    named graph is absent or any collection is empty (the load never ran / failed).
+    """
+    db = _arango_db()
+    if db is None:
+        return False
+    try:
+        if not db.has_graph(GRAPH_NAME):
+            _fail(
+                "graph_load: named graph absent",
+                f"'{GRAPH_NAME}' not found — run `make load-arango` (ETL-05 sink #2)",
+            )
+            return False
+        counts: dict[str, int] = {}
+        for coll in GRAPH_VERTEX_COLLECTIONS + GRAPH_EDGE_COLLECTIONS:
+            if not db.has_collection(coll):
+                _fail("graph_load: collection absent", f"{coll} not found — load incomplete")
+                return False
+            counts[coll] = int(db.collection(coll).count())
+    except Exception as exc:  # noqa: BLE001
+        _fail("graph_load: cluster query failed", str(exc))
+        return False
+
+    empty = [c for c, n in counts.items() if n <= 0]
+    if empty:
+        _fail("graph_load: empty collection(s)", f"{empty} have 0 docs — re-run `make load-arango`")
+        return False
+
+    detail = ", ".join(f"{c}={n}" for c, n in counts.items())
+    print(f"[CITE] Graph loaded: {GRAPH_NAME} populated ({detail}) (ETL-05 sink #2, GRAPH-01)")
+    _ok("graph_load gate: ocean_network graph + 5 vertex + 4 edge collections non-empty")
+    return True
+
+
+def gate_xstore_count_parity() -> bool:
+    """BQ dim row counts == Arango vertex counts on the shared keys (D-11, exit 17).
+
+    For each (dim, vertex) pair the BigQuery row count (CURRENT rows only for the
+    SCD2 dims) must equal the ArangoDB vertex collection count — the UN/LOCODE / IMO
+    / SCAC bridge makes the correspondence 1:1. Delegates the compare to
+    ``scripts.xstore.check_count_parity`` (the offline-tested pure logic). PRINTs a
+    ``[CITE]`` parity line per dim citing the shared key.
+    """
+    from scripts.xstore import check_count_parity
+
+    client = _bq_client()
+    if client is None:
+        return False
+    db = _arango_db()
+    if db is None:
+        return False
+
+    pairs: list[tuple[str, int, str, int]] = []
+    try:
+        for dim, vtx, is_scd2 in XSTORE_DIM_VERTEX_PAIRS:
+            where = " WHERE is_current" if is_scd2 else ""
+            bq_count = int(
+                _bq_scalar(client, f"SELECT COUNT(*) FROM `{BQ_PROJECT}.{BQ_DATASET}.{dim}`{where}")
+            )
+            gr_count = int(db.collection(vtx).count())
+            pairs.append((dim, bq_count, vtx, gr_count))
+    except Exception as exc:  # noqa: BLE001
+        _fail("xstore_count_parity: count query failed", str(exc))
+        return False
+
+    ok, mismatches = check_count_parity(pairs)
+    if not ok:
+        for m in mismatches:
+            _fail("xstore_count_parity mismatch", m)
+        return False
+
+    for dim, bq_count, vtx, gr_count in pairs:
+        print(
+            f"[CITE] Cross-store parity: {dim}={bq_count:,} == {vtx}={gr_count:,} "
+            f"(UN/LOCODE/IMO/SCAC shared-key bridge, D-11)"
+        )
+    _ok("xstore_count_parity gate: every conformed dim reconciles 1:1 with its graph vertex set")
+    return True
+
+
+def gate_xstore_semantic() -> bool:
+    """Suez transit-share reconciles BQ<->Arango on the shared lane_key (D-11, exit 18).
+
+    The Suez-transiting lane set is defined by the deterministic geographic rule
+    (``lib.graph_loader.chokepoints_for_lane``) over the canonical ``data_gen.network.LANES``
+    network — the single ground truth both sinks are projected from. The HARD check:
+    the live Arango ``transits_chokepoint -> SUEZ`` edge count equals the rule's count
+    (the graph projected exactly the rule's lanes). The BQ ``dim_lane`` overlap on the
+    same ``lane_key``s is reported for the deck (real dim_lane holds only served lanes,
+    so its overlap may be a subset — an honest gap, not a failure). Delegates the
+    compare to ``scripts.xstore.check_semantic_suez`` (offline-tested pure logic).
+    """
+    from data_gen.network import LANES
+
+    from lib.graph_loader import chokepoints_for_lane
+    from scripts.xstore import SUEZ_KEY, check_semantic_suez, suez_lane_keys
+
+    client = _bq_client()
+    if client is None:
+        return False
+    db = _arango_db()
+    if db is None:
+        return False
+
+    expected_keys = suez_lane_keys(LANES, chokepoints_for_lane)
+    expected_count = len(expected_keys)
+
+    try:
+        # Arango: count transits_chokepoint edges whose _to is the SUEZ chokepoint
+        # (AQL bind var — never f-string the chokepoint key; threat T-06-06 / ASVS V5).
+        cursor = db.aql.execute(
+            "RETURN LENGTH(FOR e IN transits_chokepoint "
+            "FILTER e._to == @to RETURN 1)",
+            bind_vars={"to": f"chokepoints/{SUEZ_KEY}"},
+        )
+        arango_suez = int(list(cursor)[0])
+    except Exception as exc:  # noqa: BLE001
+        _fail("xstore_semantic: Arango Suez traversal failed", str(exc))
+        return False
+
+    try:
+        # BQ: how many of the canonical Suez lane_keys appear in served dim_lane
+        # (parameterized UNNEST — typed query param, no string interpolation, T-05-07).
+        from google.cloud import bigquery
+
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ArrayQueryParameter("keys", "STRING", expected_keys),
+            ]
+        )
+        bq_overlap = int(
+            list(
+                client.query(
+                    f"SELECT COUNT(*) FROM `{BQ_PROJECT}.{BQ_DATASET}.dim_lane` "
+                    f"WHERE lane_key IN UNNEST(@keys)",
+                    job_config=job_config,
+                ).result()
+            )[0][0]
+        )
+    except Exception as exc:  # noqa: BLE001
+        _fail("xstore_semantic: BQ dim_lane overlap query failed", str(exc))
+        return False
+
+    ok, mismatches = check_semantic_suez(expected_count, arango_suez, bq_overlap)
+    if not ok:
+        for m in mismatches:
+            _fail("xstore_semantic mismatch", m)
+        return False
+
+    print(
+        f"[CITE] Cross-store semantic (Suez): rule-expected={expected_count} Suez lanes; "
+        f"Arango transits_chokepoint->SUEZ={arango_suez} (reconciles); "
+        f"BQ dim_lane lane_key overlap={bq_overlap} (shared lane_key bridge, D-11)"
+    )
+    _ok(
+        "xstore_semantic gate: Suez transit-share reconciles across BigQuery and "
+        "ArangoDB on the shared lane_key"
+    )
+    return True
+
+
 def main() -> int:
-    print(f"[INFO] Bronze+Silver+BQ ship-gate — running gates: {', '.join(GATES)}")
+    print(f"[INFO] Bronze+Silver+BQ+Graph ship-gate — running gates: {', '.join(GATES)}")
 
     if not gate_sha256():
         return EXIT_SHA_MISMATCH
@@ -977,11 +1204,23 @@ def main() -> int:
     if not gate_uc2_trend():
         return EXIT_UC2_NO_TREND
 
+    # --- Graph + cross-store gates (16..18) — run AFTER the BQ gates, last in the
+    # ladder (Pitfall 5: cross-store reconciliation requires BOTH sinks loaded; these
+    # gates are the most expensive — they touch the managed cluster AND BigQuery).
+    # Order: graph-loaded -> count-parity -> semantic Suez reconciliation.
+    if not gate_graph_load():
+        return EXIT_GRAPH_LOAD
+    if not gate_xstore_count_parity():
+        return EXIT_XSTORE_COUNT_PARITY
+    if not gate_xstore_semantic():
+        return EXIT_XSTORE_SEMANTIC
+
     _ok(
         "all gates",
-        "Bronze + Silver + BQ slice verified end-to-end: fact loaded, "
-        "partitioned+clustered, idempotent re-run, UC1 non-null, UC2 trend "
-        "(criteria 1-4 + WH-01/02/03 + ETL-02/04 proven)",
+        "Bronze + Silver + BQ + Graph slice verified end-to-end: fact loaded, "
+        "partitioned+clustered, idempotent re-run, UC1 non-null, UC2 trend, "
+        "ocean_network loaded, cross-store count-parity + Suez semantic reconciliation "
+        "(criteria 1-4 + WH-01/02/03 + ETL-02/04/05 + GRAPH-01 proven)",
     )
     return EXIT_OK
 

@@ -45,6 +45,9 @@ EXPECTED_TASKS = {
     "overwrite_operated_by",
     "overwrite_fact_voyage_leg",
     "overwrite_fact_port_call",
+    # ETL-05 (Phase 6): the second sink — load_arango runs PARALLEL to the BQ loads
+    # off the same stage_conform staging ("one transform, two sinks", D-05).
+    "load_arango",
     "verify",
 }
 
@@ -96,10 +99,66 @@ def test_verify_is_terminal_and_downstream_of_loads(dag) -> None:
         "overwrite_fact_port_call",
         "merge_dim_vessel",
         "merge_dim_carrier",
+        # Pitfall 5: verify (which runs the cross-store gates 16-18) must fan in on
+        # BOTH sinks — the Arango load too, not just the BQ loads/merges.
+        "load_arango",
     }
     assert must_precede_verify <= set(v.upstream_task_ids), (
         f"verify must run after {must_precede_verify}; missing="
         f"{must_precede_verify - set(v.upstream_task_ids)}"
+    )
+
+
+def test_load_arango_parallel_to_bq_loads(dag) -> None:
+    """ETL-05: load_arango runs off stage_conform, PARALLEL to the BQ loads (D-05)."""
+    arango = dag.get_task("load_arango")
+    # Upstream is stage_conform (the SAME staging that feeds the BQ loads).
+    assert "stage_conform" in arango.upstream_task_ids, (
+        "load_arango must depend on stage_conform (the shared staging — one "
+        "transform, two sinks)"
+    )
+    # Parallel, not chained after the BQ loads: no BQ load/merge is upstream of it.
+    bq_loads = {
+        t for t in EXPECTED_TASKS
+        if t.startswith(("load_staging_", "overwrite_", "merge_"))
+    }
+    assert not (bq_loads & set(arango.upstream_task_ids)), (
+        f"load_arango must be PARALLEL to the BQ loads (no BQ load upstream); "
+        f"found {bq_loads & set(arango.upstream_task_ids)}"
+    )
+    # It must feed verify (so the cross-store gates gate on this sink).
+    assert "verify" in arango.downstream_task_ids, (
+        "load_arango must precede verify (cross-store reconciliation gates on it)"
+    )
+
+
+def test_stage_conform_upstream_of_load_arango(dag) -> None:
+    """stage_conform precedes the Arango sink as well as the BQ loads (D-05)."""
+    sc = dag.get_task("stage_conform")
+    assert "load_arango" in sc.downstream_task_ids, (
+        "stage_conform must precede load_arango (shared sink-agnostic staging)"
+    )
+
+
+def test_load_arango_import_is_in_task_body_not_parse_time(dag) -> None:
+    """D-01a / portability: the DAG source must NOT import lib.graph_loader or
+    lib.arango_client at module (parse) scope — the offline DagBag parse stays
+    cluster/credentials-free. The import lives INSIDE the load_arango task body
+    (matching stage_conform's in-task `from silver import land_silver`).
+    """
+    src = DAG_FILE.read_text(encoding="utf-8")
+    import_lines = [
+        ln for ln in src.splitlines()
+        if re.match(r"\s*(from|import)\s", ln) and ln == ln.lstrip()  # top-level only
+    ]
+    joined = "\n".join(import_lines)
+    assert "graph_loader" not in joined and "arango_client" not in joined, (
+        f"graph_loader / arango_client must be imported INSIDE the task body, not "
+        f"at parse time (managed-runtime-free parse). Top-level imports: {import_lines}"
+    )
+    # And it IS imported somewhere (inside the task body).
+    assert "from lib import graph_loader" in src, (
+        "load_arango task body must `from lib import graph_loader`"
     )
 
 

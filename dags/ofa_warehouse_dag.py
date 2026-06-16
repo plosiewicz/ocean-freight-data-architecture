@@ -276,6 +276,27 @@ def ofa_warehouse():
         )
 
     @task
+    def load_arango(bucket: str = BUCKET) -> str:
+        """Sink #2 off the SAME stage_conform output — the ETL-05 'one transform,
+        two sinks' proof (D-05). Runs PARALLEL to the BQ loads, reading the identical
+        landed silver/ Parquet, and idempotently UPSERTs the conformed dims + the
+        synthetic lane network into the managed ocean_network graph over HTTPS by
+        deterministic _key (UN/LOCODE/IMO/SCAC, D-11). Connects ONLY via
+        lib.arango_client (env creds, TLS-on) inside graph_loader.load_graph.
+
+        The `from lib import graph_loader` import is INSIDE the task body (matching
+        stage_conform's in-task `from silver import land_silver`) so the offline
+        DagBag parse imports NO cluster/managed-runtime module — tests/test_dag.py
+        guards this. graph_loader, in turn, imports lib.arango_client lazily inside
+        load_graph, so even importing graph_loader at parse time stays creds-free.
+        """
+        from lib import graph_loader
+
+        summary = graph_loader.load_graph(bucket=bucket)
+        print(f"[INFO] load_arango complete (ETL-05 sink #2): {summary}")
+        return bucket
+
+    @task
     def verify(bucket: str) -> None:
         """Assert the served facts populated (the gate detail lands in 05-04).
 
@@ -321,9 +342,14 @@ def ofa_warehouse():
     ow_voyage_leg = _overwrite_fact("fact_voyage_leg")
     ow_port_call = _overwrite_fact("fact_port_call")
 
+    # Sink #2: the ArangoDB load, PARALLEL to the BQ loads off the SAME staging
+    # (ETL-05 "one transform, two sinks", D-05). It is NOT a BQ operator — it is the
+    # graph projection — so it sits beside the BQ loads, not after them.
+    arango = load_arango(staged)
+
     final = verify(staged)
 
-    # stage_conform precedes every load.
+    # stage_conform precedes every load — BOTH sinks (BQ loads AND the Arango load).
     staged >> [
         stg_vessel,
         stg_carrier,
@@ -332,6 +358,7 @@ def ofa_warehouse():
         ow_operated_by,
         ow_voyage_leg,
         ow_port_call,
+        arango,
     ]
 
     # SCD2 dims load via staging -> MERGE ONLY (the MERGE is the sole writer of the
@@ -339,7 +366,10 @@ def ofa_warehouse():
     stg_vessel >> merge_vessel
     stg_carrier >> merge_carrier
 
-    # verify runs last — after every load + merge.
+    # verify runs last — after every load + merge AND the Arango load. Fanning in on
+    # BOTH sinks is the Pitfall-5 guard: the cross-store reconciliation gates inside
+    # scripts/verify.py (exit 16..18) must only run once BQ AND ArangoDB are both
+    # populated, so a half-loaded store cannot false-pass/false-fail the check (D-05).
     [
         ow_port,
         ow_lane,
@@ -348,6 +378,7 @@ def ofa_warehouse():
         ow_port_call,
         merge_vessel,
         merge_carrier,
+        arango,
     ] >> final
 
 

@@ -12,7 +12,7 @@ BRONZE_BUCKET ?= gs://data-architecture-msds683-bronze
 PYTHON ?= python
 
 .PHONY: pull-ais pull-reference pull-priors generate load-bronze verify bronze conform derive silver \
-        ddl load-bq warehouse refreeze-sha256
+        ddl load-bq warehouse refreeze-sha256 load-arango verify-cluster
 
 # --- Warehouse config (Phase 5) ---
 BQ_PROJECT ?= data-architecture-msds683
@@ -86,6 +86,24 @@ load-bq:
 
 # warehouse: full warehouse path in dependency order (mirrors the silver: chain).
 warehouse: ddl load-bq verify
+
+# --- Graph sink (Phase 6, ETL-05): the SECOND sink off the SAME silver/ staging ---
+# verify-cluster: front-loaded connection smoke — prove the gitignored .env creds
+# reach the managed ArangoDB cluster over TLS BEFORE the live load runs. Prints a
+# diagnostic (version, cluster topology, RTT, whether ocean_network already exists);
+# never prints the password/JWT (T-06-01/T-06-03). Run this first at the checkpoint.
+verify-cluster:
+	$(PYTHON) -m scripts.verify_cluster
+
+# load-arango: project the conformed Silver dims + the synthetic lane network into
+# the managed ocean_network graph via idempotent python-arango UPSERT by deterministic
+# _key (UN/LOCODE/IMO/SCAC, D-11). This is graph_loader.load_graph — the SAME entrypoint
+# the DAG load_arango @task calls (D-06a) — so `make load-arango` and the DAG are one
+# code path. Re-runnable (ETL-04 parity): a second run UPSERTs the same _keys, leaving
+# the graph unchanged. Reads the SAME silver/ Parquet the BQ load reads ("one transform,
+# two sinks", ETL-05). Connects over HTTPS via lib.arango_client (env creds, TLS-on).
+load-arango:
+	$(PYTHON) -c "from lib.graph_loader import load_graph; load_graph(bucket='$(BQ_PROJECT)-bronze')"
 
 # refreeze-sha256: re-write the synthetic.sha256 determinism manifest from freshly
 # generated output (D-02b convenience — run after a generator change, then commit
