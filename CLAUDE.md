@@ -53,15 +53,21 @@ This is the group deliverable for **MSDS 683 (Data Architecture)** — graded on
 <!-- GSD:stack-start source:research/STACK.md -->
 ## Technology Stack
 
+> **⚠️ Phase-6 corrections (2026-06-15, supersede the rows/notes below).** Locked in `.planning/phases/06-graph-projection-network-use-cases/06-CONTEXT.md`:
+> 1. **Graph store = the team's managed ArangoDB cloud cluster** (author is an ArangoDB SE — credentials provided), **not** local Community Edition. The "CE single-node, ≤100 GiB cap, run no cluster" framing below is **moot** for this project.
+> 2. **Pregel-removal guardrail is LIFTED.** The cluster exposes the **Graph Analytics Engine (GAE)** and **GraphML**, reachable from the cluster, so server-side centrality / connected-components / PageRank are available. The "Pregel removed → must substitute with client-side NetworkX / nx-arangodb" guidance below is **superseded** — UC3 chokepoint criticality runs on **GAE server-side**. (NetworkX/nx-arangodb remain a valid fallback, not the primary path.) GraphML is available but deferred past Phase 6.
+> 3. **No graph Web UI visualizer in the demo.** The graph half is demoed via the **back-end database + native algorithms only** (AQL traversal / `SHORTEST_PATH` / GAE output returned programmatically), parallel to the OLAP half's versioned SQL. Any line below claiming "the Web UI graph viewer doubles as the demo visualizer" is **overridden**.
+> 4. **Connection/pattern source:** mirror the author's prior managed-cluster + GAE code at `/Users/plosiewicz/Desktop/health360` and `/Users/plosiewicz/Desktop/supply-chain` (`lib/arango_client.py`, `lib/autograph_client.py`, `scripts/freeze_gae.py`), with `ARANGO_*` env vars in `.env.template`.
+
 ## TL;DR — The Prescriptive Stack
 | Layer | Choice | One-line rationale |
 |-------|--------|--------------------|
 | Raw landing | **GCS** with Hive-style date partitioning, **Parquet** for tabular (AIS/port/trade), **JSONL** for synthetic events | Columnar + cheap; JSONL only where schemas are evolving or JSON-typed |
 | Orchestration | **Cloud Composer 3** running **Airflow 3.x** (3.0 GA; 3.1 in preview) | Rubric requires managed Airflow; CC3 is GA and the only forward-supported track |
 | OLAP store | **BigQuery**, native tables, **star schema**, date-**partitioned** + **clustered** | Columnar engine; star is the defended pattern, not snowflake |
-| Graph store | **ArangoDB 3.12.6** Community Edition (single node) | CE now ships all Enterprise features ≤100 GiB; matches author expertise |
-| Graph load | **arangoimport** (idempotent) + **python-arango 8.x** loaders | CLI for bulk, driver for orchestrated/idempotent loads |
-| Graph analytics | **AQL** traversals/pathfinding + **client-side NetworkX / nx-arangodb** for PageRank/centrality | **Pregel was REMOVED in 3.12** — must substitute |
+| Graph store | **ArangoDB 3.12.6** — managed **cloud cluster** (see Phase-6 correction; was "CE single-node") | Author is an ArangoDB SE; cluster gives GAE/GraphML and matches author expertise |
+| Graph load | **python-arango 8.x** idempotent UPSERT (primary) + arangoimport (optional bulk) | Driver for orchestrated/idempotent loads from the DAG; bulk CLI unneeded at this scale |
+| Graph analytics | **AQL** traversals/pathfinding + **GAE** (Graph Analytics Engine) for centrality/PageRank/components | Pregel was removed in 3.12, but the **managed cluster's GAE** is the server-side substitute (client-side NetworkX = fallback) |
 | Synthetic data | **Faker** (seeded) + **NumPy** default_rng + **pandas/pyarrow** | Deterministic reproducibility; writes Parquet/JSONL directly |
 | Sync glue | One Composer DAG, two load tasks from the **same conformed staging layer** | Single source of truth → fan-out to BQ and Arango |
 ## Recommended Stack
@@ -93,7 +99,7 @@ This is the group deliverable for **MSDS 683 (Data Architecture)** — graded on
 | **bq CLI** | Ad-hoc loads, schema inspection, dataset/table DDL | `bq load --source_format=PARQUET` (or `NEWLINE_DELIMITED_JSON`); useful for the one implemented slice before fully wiring operators. |
 | **gcloud / gsutil** | Bucket/IAM setup, object copy | Basic IAM only (governance is explicitly out of scope). |
 | **Makefile** | Verb-script entrypoints (`make generate`, `make load-bq`, `make load-arango`, `make verify`) | Reuse the Brambles Make-target + ship-gate verification pattern — proven, idempotent, demo-friendly. |
-| **ArangoDB Web UI / arangosh** | Graph visualization for the demo, ad-hoc AQL | Web UI graph viewer doubles as the "graph visualizer" the demo needs without a separate UI build. |
+| **arangosh / python-arango** | Ad-hoc AQL, GAE invocation, demo query output | Demo is back-end DB + native algorithms only — **no Web UI visualizer** (Phase-6 correction #3). Graph answers are returned programmatically, like the OLAP half's versioned SQL. |
 ## Detailed Prescriptions (answers to the six sub-questions)
 ### 1. GCS landing conventions & file formats
 - **Parquet** for AIS, port reference, and trade flows — columnar, compressed, schema-embedded, and the **recommended external-table / load format** for BigQuery. Best scan economics and clean type mapping.
@@ -111,11 +117,11 @@ This is the group deliverable for **MSDS 683 (Data Architecture)** — graded on
 - **Load mechanism:** `GCSToBigQueryOperator` with `source_format=PARQUET` and `WRITE_TRUNCATE` per partition (Parquet) or `NEWLINE_DELIMITED_JSON` for the synthetic JSONL. Prefer **explicit schemas** over autodetect for dimensions to lock types.
 - **Star vs snowflake (the defended decision):** BigQuery is a columnar MPP engine — **storage is cheap, unused columns are pruned for free, and joins are comparatively expensive**. Snowflaking normalizes dimensions to save storage, which is OLTP/row-store-era reasoning that does not pay off here; it just adds join cost and query complexity. Keep dimensions flat (star); only snowflake a dimension if it is genuinely large, slowly-changing, and shared in a way that makes the redundancy costly — none of the ocean-freight dimensions here qualify. (Google's own guidance even permits *denormalizing further* into nested/repeated fields, but star keeps the model legible for a course deliverable while staying BigQuery-idiomatic.)
 ### 4. ArangoDB graph loading & analytics
-- **Collections / naming:** vertex collections `vessels`, `ports`, `carriers`, `lanes`; edge collections `voyage_leg` (port→port), `operated_by` (vessel→carrier), `calls_at` (vessel→port). Use a single **named graph** `ocean_network` so AQL traversals and the Web UI visualizer work out of the box.
+- **Collections / naming:** vertex collections `vessels`, `ports`, `carriers`, `lanes`; edge collections `voyage_leg` (port→port), `operated_by` (vessel→carrier), `calls_at` (vessel→port). Use a single **named graph** `ocean_network` so AQL traversals and GAE work out of the box. *(Authoritative collection/edge set is the M2 model in `docs/deck/m2-arango-graph.md`: edges `route`/`segment`, `calls_at`, `operates`, `transits_chokepoint`.)*
 - **`_key` discipline:** deterministic, source-derived keys (e.g. UN/LOCODE for ports, IMO for vessels) so loads are idempotent and edges resolve `_from`/`_to` reliably.
 - **Loading:** `arangoimport` for bulk vertex/edge files (3.12 auto-detects type by extension; `--on-duplicate replace` for idempotency). For orchestrated/conditional loads, **python-arango 8.x** loaders that create collections, ensure indexes, and upsert from the same staging Parquet/JSONL.
 - **Indexes:**
-- **Analytics — IMPORTANT version change:** **Pregel (algorithms, JS API, HTTP API) was REMOVED entirely in ArangoDB 3.12.** The Brambles prior art's "Pregel PageRank" pattern **will not run on 3.12** and must be substituted:
+- **Analytics — version change + Phase-6 correction:** **Pregel was REMOVED in ArangoDB 3.12**, so the Brambles prior art's "Pregel PageRank" pattern will not run. **However, the managed cluster's Graph Analytics Engine (GAE) is the server-side substitute** (centrality / connected-components / PageRank) — use it for UC3 chokepoint criticality. Client-side NetworkX / nx-arangodb remains a valid fallback but is no longer the primary path:
 ### 5. Keeping the two stores in sync from the same ETL
 - **Single conformed staging layer is the contract.** Both load legs read the **same `staging/` Parquet/JSONL**, so BigQuery facts/dims and Arango vertices/edges are derived from one cleaned source — not two divergent transforms.
 - In the Composer DAG, `stage_conform` produces staging; `load_bigquery` and `load_arango` are **parallel downstream tasks** depending on it, followed by a `verify` task asserting row/vertex/edge counts reconcile (the Brambles ship-gate pattern).
@@ -152,7 +158,7 @@ This is the group deliverable for **MSDS 683 (Data Architecture)** — graded on
 ## Stack Patterns by Variant
 - Land AIS as partitioned Parquet (`dt=`), conform to `fact_port_call` + `dim_port` (geo), load BQ native + Arango `ports`/`calls_at`.
 - Because it exercises partitioning, clustering, geo indexing, and the two-store sync in one vertical slice — maximal rubric coverage per unit of build.
-- Lead with AQL shortest-path and `GEO_DISTANCE` chokepoint queries in the Arango Web UI visualizer; use BQ only to source the dimensions.
+- Lead with AQL shortest-path and `GEO_DISTANCE` chokepoint queries (returned programmatically — no Web UI visualizer, Phase-6 correction); use BQ only to source the dimensions.
 - Because AQL pathfinding is unaffected by the Pregel removal and is the strongest, lowest-risk graph demo.
 - Bound to a defensible slice (one region/quarter, downsampled positions) at staging before load.
 - Because CE caps at 100 GiB and BQ scan costs scale with bytes; the analytical story doesn't need the full 100GB+ corpus.

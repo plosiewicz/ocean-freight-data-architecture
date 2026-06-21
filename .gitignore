@@ -34,6 +34,12 @@ __pycache__/
 # (`airflow dags test`). Never committed; regenerated on demand via `airflow db migrate`.
 .airflow/
 
+# Local dev tooling (personal workflow, not a project deliverable):
+#   vm-agent.sh     — run Claude Code on a GCP VM in tmux (survives closed laptop)
+#   notify-phone.py — ntfy.sh phone-push hook registered by vm-agent.sh
+scripts/vm-agent.sh
+scripts/notify-phone.py
+
 # Per-run criticality sidecar (gral|networkx path marker) — runtime, regenerated.
 analytics/.criticality_run_meta.json
 # ...but DO commit the credential-free frozen golden (counts/floats/strings only,
