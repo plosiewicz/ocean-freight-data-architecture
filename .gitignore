@@ -45,3 +45,12 @@ analytics/.criticality_run_meta.json
 # ...but DO commit the credential-free frozen golden (counts/floats/strings only,
 # T-06-08 — the Phase-7 demo-safety artifact must be committable).
 !criticality.golden.json
+
+# v1.1 web/ Next.js app — Node build artifacts (T-08-03). Never committed.
+web/node_modules/
+web/.next/
+web/.vercel/
+web/*.tsbuildinfo
+# Build-time COPIED server-only assets (repo-root sql/aql/data-golden remain the
+# single source of truth, D-05). Regenerated each prebuild; not committed.
+web/server-assets/
