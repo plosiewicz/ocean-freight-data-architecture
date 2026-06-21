@@ -1460,6 +1460,31 @@ _CREDENTIAL_TEMPLATE = ".env.template"
 _JWT_RE = re.compile(r"^ey[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}$")
 _PLACEHOLDER_RE = re.compile(r"^(<.*>|placeholder.*|changeme.*|your[-_].*|xxx+|\.\.\.)$", re.IGNORECASE)
 
+# --- DEPLOY-02 (08-02) extensions to the credential gate (still exit 20, D-03) --- #
+# Check (a): a NEXT_PUBLIC_* identifier is INLINED into the client bundle by Next.js, so
+# any credential-shaped value (or a credential-named var with a non-placeholder value)
+# is a browser-readable leak (threat T-08-05). Scan TRACKED web/ source only (git ls-files
+# web/) so untracked build output is excluded — the bundle itself is covered by Check (b).
+_NEXT_PUBLIC_ASSIGN_RE = re.compile(r"(NEXT_PUBLIC_[A-Z0-9_]+)\s*[=:]\s*(.+)")
+# A NEXT_PUBLIC var whose NAME implies a credential — flagged on ANY non-placeholder value.
+_CREDENTIAL_NAME_RE = re.compile(r"(KEY|SECRET|PASSWORD|TOKEN|CRED)", re.IGNORECASE)
+# Source files worth scanning for NEXT_PUBLIC assignments (skip lockfiles/binaries).
+_NEXT_PUBLIC_SCAN_SUFFIXES = (
+    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".json", ".env", ".template",
+)
+
+# Check (b): the built client bundle (web/.next/static/**) must contain NO secret. Grep for
+# known secret signatures (threat T-08-06). Match FILE PATH only on a hit — never the value
+# (T-07-08 / T-08-09). Bytes (not text) so a binary chunk never raises a decode error.
+WEB_CLIENT_BUNDLE_DIR = REPO_ROOT / "web" / ".next" / "static"
+_CLIENT_BUNDLE_SECRET_SIGNATURES: tuple[tuple[str, re.Pattern[bytes]], ...] = (
+    ("PEM private-key block", re.compile(rb"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+    ("ARANGO_PASSWORD assignment", re.compile(rb"ARANGO_PASSWORD\s*[=:]\s*\S")),
+    ("creds-embedded ARANGO_URL", re.compile(rb"ARANGO_URL\s*[=:]\s*[\"']?https?://[^\s\"']*:[^\s\"']*@")),
+    ("service-account private_key field", re.compile(rb'"private_key"\s*:\s*"-----BEGIN')),
+    ("JWT token", re.compile(rb"ey[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}")),
+)
+
 
 def _value_looks_real(value: str) -> bool:
     """True if an .env.template value looks like a REAL secret (not a placeholder)."""
@@ -1480,12 +1505,74 @@ def _value_looks_real(value: str) -> bool:
     return len(v) >= 12
 
 
+def _audit_next_public(tracked_web: list[str]) -> list[str]:
+    """Check (a): flag credential-shaped NEXT_PUBLIC_* assignments in tracked web/ source.
+
+    NEXT_PUBLIC_* vars are inlined into the client bundle by Next.js (T-08-05). A value is a
+    leak if it (1) looks like a real secret (_value_looks_real) OR (2) the var NAME implies a
+    credential (KEY|SECRET|PASSWORD|TOKEN|CRED) with a non-placeholder value. Returns a list of
+    'VAR_NAME (path)' offenders — the var NAME + PATH only, NEVER the value (T-07-08/T-08-09).
+    """
+    offenders: list[str] = []
+    for path in tracked_web:
+        if not path.endswith(_NEXT_PUBLIC_SCAN_SUFFIXES):
+            continue
+        fpath = REPO_ROOT / path
+        try:
+            text = fpath.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for match in _NEXT_PUBLIC_ASSIGN_RE.finditer(text):
+            var_name, raw_value = match.group(1), match.group(2)
+            # Strip trailing punctuation/quotes/semicolons a source line may carry.
+            value = raw_value.strip().rstrip(",;").strip().strip('"').strip("'")
+            credential_named = bool(_CREDENTIAL_NAME_RE.search(var_name))
+            is_leak = _value_looks_real(value) or (
+                credential_named and value and not _PLACEHOLDER_RE.match(value)
+            )
+            if is_leak:
+                offenders.append(f"{var_name} ({path})")  # NAME + PATH only, never the value
+    return offenders
+
+
+def _audit_client_bundle() -> list[str]:
+    """Check (b): grep the built client bundle (web/.next/static/**) for secret signatures.
+
+    Returns a list of offending FILE PATHS (relative to repo root) — PATH only, never the
+    matched bytes (T-08-09). If the bundle dir is ABSENT (clean checkout / pre-build), returns
+    None so the caller can print an explicit [INFO] skip and keep the gate runnable; CI builds
+    web/ first (D-04) so the check is REAL there. (T-08-06.)
+    """
+    offenders: list[str] = []
+    for fpath in sorted(WEB_CLIENT_BUNDLE_DIR.rglob("*")):
+        if not fpath.is_file():
+            continue
+        try:
+            blob = fpath.read_bytes()
+        except OSError:
+            continue
+        for _label, pattern in _CLIENT_BUNDLE_SECRET_SIGNATURES:
+            if pattern.search(blob):
+                rel = fpath.relative_to(REPO_ROOT).as_posix()
+                offenders.append(rel)  # PATH only — never the matched secret bytes
+                break
+    return offenders
+
+
 def gate_credential_audit() -> bool:
     """Assert NO tracked file matches a secret pattern and .env.template is placeholders-only.
 
     Offline + cheap: runs `git ls-files` and reads .env.template. Prints offending
     PATHS only (never a secret value, T-07-08). Returns False on any leak so
     main() exits EXIT_CREDENTIAL_LEAK (20).
+
+    DEPLOY-02 (08-02 / D-03) EXTENSIONS — run WITHIN this same gate (exit 20 unchanged):
+      (a) flag any tracked web/ NEXT_PUBLIC_* assignment with a credential-shaped value
+          (threat T-08-05) — var NAME + path printed, never the value;
+      (b) grep the built client bundle web/.next/static/** for known secret signatures
+          (threat T-08-06) — FILE PATH printed, never the bytes. Skipped with an explicit
+          [INFO] line when the bundle is absent (clean checkout); CI builds web/ first so the
+          check is real there (D-04).
     """
     result = subprocess.run(
         ["git", "ls-files"],
@@ -1533,11 +1620,49 @@ def gate_credential_audit() -> bool:
             )
         return False
 
+    # --- Check (a): credential-shaped NEXT_PUBLIC_* in tracked web/ source (T-08-05) ---
+    tracked_web = [p for p in tracked if p == "web" or p.startswith("web/")]
+    next_public_leaks = _audit_next_public(tracked_web)
+    if next_public_leaks:
+        for offender in sorted(set(next_public_leaks)):
+            _fail(
+                "credential-shaped NEXT_PUBLIC var",
+                f"NEXT_PUBLIC_* inlined into the client bundle holds a credential: {offender} "
+                f"(value redacted — T-08-05)",
+            )
+        return False
+
+    # --- Check (b): secret signature in the built client bundle web/.next/static (T-08-06) ---
+    if WEB_CLIENT_BUNDLE_DIR.is_dir():
+        bundle_leaks = _audit_client_bundle()
+        if bundle_leaks:
+            for path in sorted(set(bundle_leaks)):
+                _fail(
+                    "secret pattern in client bundle",
+                    f"a known secret signature was found in the built client bundle: {path} "
+                    f"(value redacted — T-08-06)",
+                )
+            return False
+        print(
+            f"[CITE] client-bundle grep: web/.next/static scanned, 0 secret signatures "
+            f"(no credential reached the browser — T-08-06)"
+        )
+    else:
+        print(
+            "[INFO] client-bundle grep SKIPPED: web/.next/static not present (no build output "
+            "on this checkout). CI builds web/ first so the check runs for real there (D-04)."
+        )
+
     print(
         f"[CITE] credential audit: 0 credential paths tracked across {len(tracked)} files; "
-        f".env.template placeholders-only (DEL-02 / T-07-05..08)"
+        f".env.template placeholders-only; {len(tracked_web)} tracked web/ files free of "
+        f"credential-shaped NEXT_PUBLIC vars (DEL-02 / DEPLOY-02 / T-07-05..08 + T-08-05/06)"
     )
-    _ok("credential_audit gate: no committed secrets; .env.template is placeholders-only (exit 20 contract)")
+    _ok(
+        "credential_audit gate: no committed secrets; .env.template placeholders-only; no "
+        "credential-shaped NEXT_PUBLIC var; client bundle free of secret signatures "
+        "(exit 20 contract)"
+    )
     return True
 
 
