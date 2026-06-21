@@ -12,7 +12,8 @@ BRONZE_BUCKET ?= gs://data-architecture-msds683-bronze
 PYTHON ?= python
 
 .PHONY: pull-ais pull-reference pull-priors generate load-bronze verify bronze conform derive silver \
-        ddl load-bq warehouse refreeze-sha256 load-arango verify-cluster verify-uc freeze demo
+        ddl load-bq warehouse refreeze-sha256 load-arango verify-cluster verify-uc freeze demo \
+        secret-gate
 
 # --- Warehouse config (Phase 5) ---
 BQ_PROJECT ?= data-architecture-msds683
@@ -51,6 +52,18 @@ verify:
 # (mirrors `make verify-cluster`). The DAG verify task also gates on the same logic.
 verify-uc:
 	$(PYTHON) -c "import sys; from scripts.verify import gate_uc_anti_degeneracy, EXIT_OK, EXIT_UC_DEGENERATE; sys.exit(EXIT_OK if gate_uc_anti_degeneracy() else EXIT_UC_DEGENERATE)"
+
+# --- Focused credential gate (exit 20) — local belt-and-suspenders for DEPLOY-02 (D-04) -----
+# Runs ONLY the EXTENDED gate_credential_audit: the existing git ls-files secret-path scan +
+# .env.template placeholders audit, PLUS Check (a) credential-shaped NEXT_PUBLIC_* in tracked
+# web/ source (T-08-05) and Check (b) the built web/.next/static client-bundle secret grep
+# (T-08-06). Identical focused invocation to .github/workflows/secret-gate.yml — the same gate
+# runs locally AND in CI on every push/PR. Check (b) is REAL only after a build; run
+# `cd web && npm run build` first (or rely on CI, which builds web/) to exercise it — without
+# build output the gate prints an [INFO] skip and still runs Check (a). `make verify` still runs
+# the full 0..21 ladder; this is the fast local smoke for the secret boundary alone.
+secret-gate:
+	$(PYTHON) -c "import sys; from scripts.verify import gate_credential_audit, EXIT_OK, EXIT_CREDENTIAL_LEAK; sys.exit(EXIT_OK if gate_credential_audit() else EXIT_CREDENTIAL_LEAK)"
 
 # --- freeze: freeze all four UC answers to committable data/golden/uc*.golden.json --
 # Reads live BigQuery (UC1/UC2 ADC) + the managed ArangoDB cluster (UC3/UC4 via the
