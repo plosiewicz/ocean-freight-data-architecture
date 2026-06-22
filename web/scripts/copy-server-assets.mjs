@@ -14,11 +14,13 @@
 // do not accumulate stale files). The repo-root dirs remain the single source
 // of truth; `server-assets/` is gitignored (no committed duplication / drift).
 //
-// Vercel deploy note (D-05): because the source dirs live OUTSIDE the Vercel
-// Root Directory (`web/`), the Vercel project MUST have the setting
-// "Include source files outside of the Root Directory in the Build Step"
-// ENABLED, or `../sql`/`../aql`/`../data/golden` will not exist at build time.
-// See 08-01-SUMMARY.md and the Plan 03 deploy step.
+// Vercel deploy note (D-05): the source dirs live OUTSIDE `web/`, so the build
+// must run with repo-root context. We achieve this with the feature-tracker
+// pattern — a repo-root `vercel.json` that keeps the Vercel Root Directory at
+// the repo root and runs `cd web && npm run build`. Because the build context
+// is the whole repo, `../sql`/`../aql`/`../data/golden` are always present and
+// the "Include source files outside of the Root Directory" toggle is NOT
+// needed. See 08-01-SUMMARY.md and the Plan 03 deploy step.
 
 import { cpSync, rmSync, mkdirSync, existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";

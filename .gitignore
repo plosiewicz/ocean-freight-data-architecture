@@ -54,3 +54,4 @@ web/*.tsbuildinfo
 # Build-time COPIED server-only assets (repo-root sql/aql/data-golden remain the
 # single source of truth, D-05). Regenerated each prebuild; not committed.
 web/server-assets/
+.vercel
