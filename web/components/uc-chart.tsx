@@ -78,7 +78,7 @@ export function UcChart({
             tickLine={false}
             axisLine={false}
             tickMargin={8}
-            interval="preserveStartEnd"
+            interval={0}
             minTickGap={8}
           />
           <YAxis tickLine={false} axisLine={false} tickMargin={8} width={48} />
