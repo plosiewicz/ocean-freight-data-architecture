@@ -29,6 +29,12 @@
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
+  /* Map store-accent token (Phase 10). emerald-600 is a Tailwind palette utility, NOT a
+     CSS var, so deck.gl (which needs an [r,g,b,a] array resolved from a CSS var) cannot
+     read it. Per RESEARCH Open Question 2 we add a dedicated --map-accent token mirroring
+     emerald-600 — the same approach Phase-9 used to add --chart-* — rather than reading a
+     hidden text-emerald-600 element. This is the open chokepoint / UC4 reroute-arc color. */
+  --map-accent: oklch(0.596 0.145 163.225);
 }
 
 .dark {
@@ -55,6 +61,9 @@
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
+  /* Same emerald-600 mirror in dark mode (kept identical — emerald reads well on both
+     the light CARTO Positron basemap and the blanked dark fallback canvas). */
+  --map-accent: oklch(0.596 0.145 163.225);
 }
 
 @theme inline {
@@ -81,6 +90,7 @@
   --color-chart-3: var(--chart-3);
   --color-chart-4: var(--chart-4);
   --color-chart-5: var(--chart-5);
+  --color-map-accent: var(--map-accent);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
