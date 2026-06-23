@@ -116,8 +116,9 @@ export function UcDashboard({ ucId, rows }: UcDashboardProps) {
   }, [ucId, rows, config.breakdownOptions]);
 
   // For UC1 the chart category IS the chosen breakdown dimension, so the raw golden rows
-  // are GROUPED by that dimension and reduced to one record per distinct value (MEAN for
-  // on_time_pct / avg_delay_hours, SUM for legs) — otherwise Recharts draws one bar per
+  // are GROUPED by that dimension and reduced to one record per distinct value
+  // (legs-weighted MEAN for on_time_pct / avg_delay_hours, SUM for legs) — otherwise
+  // Recharts draws one bar per
   // raw row (up to 4 duplicate bars per carrier). For UC2 the chart is a per-port trend
   // line over call_date, narrowed to the selected port via the breakdown control. All
   // derived client-side over the already-fetched `rows` prop — no fetch/serve (CHART-05).
@@ -148,10 +149,17 @@ export function UcDashboard({ ucId, rows }: UcDashboardProps) {
     for (const [key, group] of groups) {
       const n = group.length;
       const legs = group.reduce((sum, r) => sum + r.legs, 0);
-      const onTimeMean =
-        group.reduce((sum, r) => sum + r.on_time_pct, 0) / n;
-      const delayMean =
-        group.reduce((sum, r) => sum + r.avg_delay_hours, 0) / n;
+      // on_time_pct / avg_delay_hours are per-row RATES/durations over differing leg
+      // counts, so a plain mean over-weights low-volume rows. Roll them up with a
+      // LEGS-WEIGHTED mean — weighting each row by its legs — which is the correct
+      // aggregate for the carrier/lane/port figures the chart presents. Fall back to
+      // the unweighted mean only when the group has zero total legs (degenerate).
+      const weightedMean = (pick: (r: Uc1Row) => number) =>
+        legs > 0
+          ? group.reduce((sum, r) => sum + pick(r) * r.legs, 0) / legs
+          : group.reduce((sum, r) => sum + pick(r), 0) / n;
+      const onTimeMean = weightedMean((r) => r.on_time_pct);
+      const delayMean = weightedMean((r) => r.avg_delay_hours);
       aggregated.push({
         // The category field IS the breakdown key, so categoryKey = breakdown still works.
         [breakdown]: key,
