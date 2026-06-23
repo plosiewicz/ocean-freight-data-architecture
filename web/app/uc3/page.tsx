@@ -1,18 +1,27 @@
+import { Uc3MapLoader } from "@/components/uc3-map-loader";
 import { UcHeader } from "@/components/uc-header";
 import { Uc3Summary } from "@/components/uc3-summary";
+import type { ServedBy, Uc3Enriched } from "@/lib/golden-types";
 import { serve } from "@/lib/serve";
 
 // UC3 — Chokepoint risk exposure (ArangoDB / graph). Async Server Component:
-// fetches the golden envelope server-side via serve() (golden-only in Phase 9),
-// composes the provenance header + the structured summary. No "use client" —
-// the summary is render-only, so nothing serializes secrets to the bundle.
+// fetches the COORD-ENRICHED golden envelope server-side via serve() (golden-only in
+// Phase 9; enrichment runs inside serve()), composes the provenance header, the deck.gl
+// map (a "use client" child), then the persisting structured summary BELOW it (D-11).
+// The page itself stays an RSC — only the map loader is "use client", so nothing
+// sensitive serializes into the bundle.
 
 export default async function Uc3Page() {
-  // serve()'s envelope type is inferred from the "uc3" id (U extends UcId).
-  const envelope = await serve("uc3");
+  // serve()'s static type is the base Uc3Envelope; at runtime serve() enriches uc3/uc4
+  // with lat/lon (+ chokepoint names + the explicit ports[]). Narrow to Uc3Enriched for
+  // the map loader — the enrichment is the store-agnostic render contract (10-01).
+  const envelope = (await serve("uc3")) as Uc3Enriched & {
+    served_by: ServedBy;
+  };
   return (
-    <main className="mx-auto max-w-3xl px-6 py-16">
+    <main className="mx-auto max-w-5xl px-6 py-16">
       <UcHeader id="uc3" servedBy={envelope.served_by} />
+      <Uc3MapLoader envelope={envelope} />
       <Uc3Summary data={envelope} />
     </main>
   );
