@@ -83,7 +83,12 @@ export function coordFor(
   chk: ChokepointTable,
 ): Coord | null {
   const k = normKey(key);
-  const c = chk[CHOKEPOINT_ALIAS[k] ?? k] ?? ports[PORT_ALIAS[k] ?? k];
+  // Chokepoint table is keyed by CHK_* (resolve via CHOKEPOINT_ALIAS). The port
+  // table is GOLDEN-keyed (ports.json re-keys WPI CNSGH -> golden CNSHA on emit),
+  // so try the golden key directly first; the PORT_ALIAS fallback keeps the lookup
+  // correct even if the table were ever WPI-keyed (auditable bridge in one place).
+  const c =
+    chk[CHOKEPOINT_ALIAS[k] ?? k] ?? ports[k] ?? ports[PORT_ALIAS[k] ?? k];
   return c && Number.isFinite(c.lat) && Number.isFinite(c.lon)
     ? { lat: c.lat, lon: c.lon }
     : null;

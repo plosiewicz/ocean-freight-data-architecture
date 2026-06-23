@@ -20,7 +20,14 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import type { EnvelopeByUc, ServedBy, UcId } from "@/lib/golden-types";
+import { enrichWithCoords } from "@/lib/coords";
+import type {
+  EnvelopeByUc,
+  ServedBy,
+  Uc3Envelope,
+  Uc4Envelope,
+  UcId,
+} from "@/lib/golden-types";
 
 // server-assets/golden lives at web/server-assets/golden — the same destination
 // copy-server-assets.mjs writes to (NOT web/public/). Vercel build context is the
@@ -64,12 +71,41 @@ export async function serve<U extends UcId>(
   if (!forceGolden() && liveFetcher) {
     try {
       const live = await liveFetcher();
-      return { ...live, served_by: "live" satisfies ServedBy };
+      const enriched = await enrich(uc, live);
+      return { ...enriched, served_by: "live" satisfies ServedBy };
     } catch {
       // Live path failed (timeout, auth, connection) — fall through to golden (D-09).
       // No error escapes: the graded demo cannot hard-fail.
     }
   }
   const golden = await readGolden(uc);
-  return { ...golden, served_by: "golden" satisfies ServedBy };
+  const enriched = await enrich(uc, golden);
+  return { ...enriched, served_by: "golden" satisfies ServedBy };
+}
+
+/**
+ * DATA-07 coordinate enrichment at the single return seam (D-08). UC3/UC4 envelopes
+ * gain server-joined lat/lon (and chokepoint display names); UC1/UC2 pass through
+ * untouched. Both the live and golden branches flow through here, so P11/P12 live
+ * fetchers inherit the join for free — exactly the "drop a fetcher into the slot
+ * without touching this logic" guarantee documented above. The enriched envelope is
+ * the single store-agnostic contract the map components render against.
+ */
+async function enrich<U extends UcId>(
+  uc: U,
+  envelope: EnvelopeByUc[U],
+): Promise<EnvelopeByUc[U]> {
+  if (uc === "uc3") {
+    return (await enrichWithCoords(
+      "uc3",
+      envelope as Uc3Envelope,
+    )) as unknown as EnvelopeByUc[U];
+  }
+  if (uc === "uc4") {
+    return (await enrichWithCoords(
+      "uc4",
+      envelope as Uc4Envelope,
+    )) as unknown as EnvelopeByUc[U];
+  }
+  return envelope;
 }
