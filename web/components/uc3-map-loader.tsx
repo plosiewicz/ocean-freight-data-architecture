@@ -148,6 +148,16 @@ export function Uc3MapLoader({ envelope }: Uc3MapLoaderProps) {
       getSize: 22,
       sizeUnits: "pixels",
       pickable: true,
+      // MAP-03 — ~600ms ease fade on the closure toggle instead of an instant snap.
+      // `updateTriggers` forces the getColor accessor to re-evaluate when `closed`
+      // flips (deck.gl memoizes accessors otherwise); `transitions` then interpolates
+      // the RGBA over 600ms. This is the idiomatic deck.gl accessor transition — NO
+      // manual rAF loop, and resolveMapColors stays in its useMemo([]) (RESEARCH
+      // Pitfall 5). It fades the CHOKEPOINT GLYPH only: the envelope carries aggregate
+      // reachability COUNTS (29/11), not a per-port reachable set, so there is nothing
+      // to fade per-port (RESEARCH Pitfall 4).
+      updateTriggers: { getColor: [closed] },
+      transitions: { getColor: { duration: 600 } },
     });
 
     return [portLayer, chokepointLayer];
