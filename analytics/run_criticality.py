@@ -53,6 +53,7 @@ from pathlib import Path
 
 import networkx as nx
 import requests
+from arango.exceptions import ArangoError
 
 from lib.arango_client import (
     MissingCredentialsError,
@@ -523,7 +524,7 @@ def run_gral_or_networkx(db, cfg: dict, jwt: str) -> dict:
                 "docs (AQL-projection limitation, Pitfall 1); persisting the "
                 "identical betweenness via NetworkX over the same projection"
             )
-    except (requests.RequestException, RuntimeError) as exc:
+    except (requests.RequestException, RuntimeError, ArangoError) as exc:
         _info(f"gral path unavailable ({type(exc).__name__}: {exc}); NetworkX fallback")
 
     # Shared idempotent write-back (both paths). The chokepoint criticality is
