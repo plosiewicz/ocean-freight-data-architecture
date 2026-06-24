@@ -21,8 +21,9 @@ const STORE_TAG_STYLE: Record<UseCase["store"], string> = {
 
 export interface UcHeaderProps {
   id: UseCase["id"];
-  // Reserved Phase-13 slot (APP-05): the live/golden indicator plugs in here without
-  // restructuring the header. P9 accepts the prop but renders nothing for it.
+  // APP-05 / D-02: drives the live/golden provenance pill (green "Live" / amber
+  // "Snapshot"). When undefined, no pill renders. Passed from every /ucN page as
+  // servedBy={envelope.served_by}.
   servedBy?: ServedBy;
 }
 
@@ -52,13 +53,22 @@ export function UcHeader({ id, servedBy }: UcHeaderProps) {
         >
           Answered by: {uc.store}
         </span>
-        {/* Phase-13 served_by slot — reserved, renders nothing in P9 (D-07/APP-05). */}
+        {/* Provenance pill — APP-05 / D-02. Source-only live/golden axis, distinct
+            from the store-identity badge above. Reuses the store-badge pill recipe
+            verbatim, swapping only the color triad + label. Copy rule: "Live" /
+            "Snapshot" — NEVER the internal word "golden". The data-served-by hook
+            (mirroring data-store-tag) is what the dress rehearsal asserts on. */}
         {servedBy ? (
           <span
-            className="text-xs font-medium text-muted-foreground"
             data-served-by={servedBy}
+            className={cn(
+              "rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ring-inset",
+              servedBy === "live"
+                ? "bg-emerald-100 text-emerald-800 ring-emerald-200"
+                : "bg-amber-100 text-amber-800 ring-amber-200",
+            )}
           >
-            served {servedBy}
+            {servedBy === "live" ? "Live" : "Snapshot"}
           </span>
         ) : null}
       </div>
