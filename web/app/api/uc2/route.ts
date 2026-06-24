@@ -9,6 +9,13 @@ import { serve } from "@/lib/serve";
 //
 // Node runtime is REQUIRED: serve() reads node:fs from server-assets/golden (T-09-01).
 export const runtime = "nodejs";
+// DATA-06 (RESEARCH D-01 CORRECTION): `revalidate` alone is INERT here because this GET
+// handler calls no fetch() (serve() reads node:fs + process.env), and GET handlers are
+// dynamic-by-default since Next 15-RC. `force-static` is what actually opts the route into
+// static/ISR caching; pairing it with revalidate=300 regenerates at most every 5 minutes,
+// keeping repeated demo clicks off the live BigQuery round-trip.
+export const dynamic = "force-static";
+export const revalidate = 300;
 
 export async function GET() {
   // Phase 11: pass the live BigQuery fetcher only when the SA credential is present
