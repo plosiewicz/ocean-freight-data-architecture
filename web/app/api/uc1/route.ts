@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { hasLiveCreds, uc1LiveFetcher } from "@/lib/bigquery";
 import type { Uc1Envelope } from "@/lib/golden-types";
 import { serve } from "@/lib/serve";
 
@@ -11,8 +12,9 @@ import { serve } from "@/lib/serve";
 export const runtime = "nodejs";
 
 export async function GET() {
-  // Phase 9: no liveFetcher → serve() always falls to the frozen golden snapshot.
-  // Phases 11/12 pass the live BigQuery fetcher here without changing the fallback.
-  const envelope = await serve("uc1");
+  // Phase 11: pass the live BigQuery fetcher only when the SA credential is present
+  // (D-06 creds gate). Absent creds → undefined → serve() serves golden. FORCE_GOLDEN
+  // still overrides to golden, and serve()'s catch still falls back on any throw.
+  const envelope = await serve("uc1", hasLiveCreds() ? uc1LiveFetcher : undefined);
   return NextResponse.json(envelope satisfies Uc1Envelope & { served_by: string });
 }
