@@ -41,7 +41,9 @@ function uc1Env(): EnvelopeByUc["uc1"] {
 function makeCountingCache() {
   const calls = { wraps: 0, invocations: 0 };
   const store = new Map<string, unknown>();
-  const wrap = <T extends (...a: never[]) => Promise<unknown>>(
+  // Match next/cache's Callback constraint exactly: (...args: any[]) => Promise<any>.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const wrap = <T extends (...a: any[]) => Promise<any>>(
     cb: T,
     keyParts?: string[],
     options?: { revalidate?: number | false; tags?: string[] },
@@ -49,7 +51,8 @@ function makeCountingCache() {
     calls.wraps += 1;
     void options;
     const key = (keyParts ?? []).join("|");
-    const wrapped = (async (...args: never[]) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const wrapped = (async (...args: any[]) => {
       calls.invocations += 1;
       if (store.has(key)) return store.get(key);
       const result = await cb(...args); // a rejection here propagates and is NOT stored

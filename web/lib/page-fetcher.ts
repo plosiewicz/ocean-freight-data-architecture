@@ -31,12 +31,15 @@ import type { UcId } from "@/lib/golden-types";
 export const LIVE_REVALIDATE_SECONDS = 300;
 
 /**
- * The unstable_cache shape, narrowed to the wrapper we use here:
- *   wrap(cb, keyParts?, { revalidate }) -> a fn with the same signature as cb.
- * Injected purely so the unit test is hermetic (a counting/memoizing stub stands in for the
- * real next/cache runtime); production call sites use the real unstable_cache default below.
+ * The unstable_cache shape, kept structurally identical to next/cache's so the real
+ * `unstable_cache` is assignable as the default arg. Its `Callback` constraint is
+ * `(...args: any[]) => Promise<any>`; we mirror that exactly. Injected purely so the unit
+ * test is hermetic (a counting/memoizing stub stands in for the real next/cache runtime);
+ * production call sites use the real unstable_cache default below.
  */
-export type CacheWrapper = <T extends (...args: never[]) => Promise<unknown>>(
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type CacheCallback = (...args: any[]) => Promise<any>;
+export type CacheWrapper = <T extends CacheCallback>(
   cb: T,
   keyParts?: string[],
   options?: { revalidate?: number | false; tags?: string[] },
@@ -64,7 +67,7 @@ export function cachedLiveFetcher<U extends UcId>(
   if (!hasCreds()) return undefined;
 
   const wrapped = cacheWrapper(
-    underlying as unknown as (...args: never[]) => Promise<unknown>,
+    underlying as unknown as CacheCallback,
     ["uc-live", uc],
     { revalidate: LIVE_REVALIDATE_SECONDS },
   ) as unknown as LiveFetcher<U>;

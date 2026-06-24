@@ -1,7 +1,9 @@
 import { Uc4MapLoader } from "@/components/uc4-map-loader";
 import { UcHeader } from "@/components/uc-header";
 import { Uc4Summary } from "@/components/uc4-summary";
+import { hasLiveCreds, uc4LiveFetcher } from "@/lib/arango";
 import type { ServedBy, Uc4Enriched } from "@/lib/golden-types";
+import { cachedLiveFetcher } from "@/lib/page-fetcher";
 import { serve } from "@/lib/serve";
 
 // UC4 — Disruption rerouting (ArangoDB / graph). Async Server Component:
@@ -14,9 +16,18 @@ import { serve } from "@/lib/serve";
 // runtime (the 10-01 design); we narrow to Uc4Enriched the same documented way uc3/page.tsx
 // does. The base-shaped fields the summary reads are a subset of the enriched type, so the
 // single fetched envelope feeds both the map (enriched) and the summary (base) unchanged.
+//
+// force-dynamic (APP-05): render per request so served_by reflects reality and the UcHeader
+// pill genuinely flips Live<->Snapshot. The live ArangoDB round-trip stays off the per-render
+// path via the cachedLiveFetcher data cache (~300s, clear of the ~1h JWT window), so DATA-06
+// is not regressed. The second arg is the SAME creds-gated ArangoDB fetcher /api/uc4 uses.
+export const dynamic = "force-dynamic";
 
 export default async function Uc4Page() {
-  const envelope = (await serve("uc4")) as Uc4Enriched & {
+  const envelope = (await serve(
+    "uc4",
+    cachedLiveFetcher("uc4", hasLiveCreds, uc4LiveFetcher),
+  )) as Uc4Enriched & {
     served_by: ServedBy;
   };
 
