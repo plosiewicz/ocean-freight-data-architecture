@@ -18,14 +18,17 @@
 // color-blind second channel is the height/width difference, not hue alone (muted+flat
 // baseline vs emerald+raised reroute).
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import dynamic from "next/dynamic";
 
 import { ArcLayer, ScatterplotLayer, TextLayer } from "@deck.gl/layers";
+import { TripsLayer } from "@deck.gl/geo-layers";
 import type { Layer, PickingInfo } from "@deck.gl/core";
 
+import { Button } from "@/components/ui/button";
 import { resolveMapColors, type RGBA } from "@/lib/map-colors";
+import { toTrip } from "@/lib/uc4-trip";
 import type { Uc4Enriched, Uc4PathHopEnriched } from "@/lib/golden-types";
 
 const UcMap = dynamic(() => import("./uc-map").then((m) => m.UcMap), {
@@ -36,6 +39,18 @@ const UcMap = dynamic(() => import("./uc-map").then((m) => m.UcMap), {
     <div className="h-[360px] rounded-lg border bg-muted/30 sm:h-[480px]" />
   ),
 });
+
+// The animation clock runs in the SAME hour-scale units as toTrip's cumulative-leg_hours
+// timestamps (Pitfall 3 — NEVER epoch-ms). LOOP_LENGTH is ~the max cumulative hours across
+// both trips plus a tail so the vessel fully arrives, fades, and the loop restarts cleanly;
+// the +76.22h reroute delta is what the longer reroute trip makes self-evident on replay.
+// Tuned for feel (D-04, Claude's discretion).
+const LOOP_LENGTH = 520;
+// Hours advanced per animation frame — small enough to read the traversal, large enough to
+// complete the loop in a few seconds at ~60fps.
+const TIME_STEP = 2;
+// Trailing comet length behind the vessel, in the same hour units as currentTime.
+const TRAIL_LENGTH = 60;
 
 // A from→to arc segment between two consecutive hops (deck.gl is [lon, lat] order).
 interface ArcSeg {
@@ -66,6 +81,26 @@ export interface Uc4MapLoaderProps {
 export function Uc4MapLoader({ envelope }: Uc4MapLoaderProps) {
   // Resolve the theme colors ONCE on mount (RESEARCH Pitfall 5), not per-frame.
   const colors = useMemo(() => resolveMapColors(), []);
+
+  // TripsLayer animation clock (MAP-06 / D-04). `playing` gates the rAF loop; `currentTime`
+  // is the hour-scale clock fed to TripsLayer. Default playing=true so the loop runs hands-off
+  // for the demo. This is pure presentation state over already-fetched coords — no re-query.
+  const [playing, setPlaying] = useState(true);
+  const [currentTime, setCurrentTime] = useState(0);
+
+  // rAF loop: while playing, advance the clock by TIME_STEP per frame modulo LOOP_LENGTH so
+  // the baseline→reroute traversal continuously replays. Cancel the frame on pause/unmount so
+  // we never leak a running loop. resolveMapColors stays OUT of this tick (Pitfall 5).
+  useEffect(() => {
+    if (!playing) return;
+    let raf = 0;
+    const tick = () => {
+      setCurrentTime((t) => (t + TIME_STEP) % LOOP_LENGTH);
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [playing]);
 
   const { baseline_path, reroute_path, baseline_hours, reroute_hours, delta } =
     envelope;
@@ -154,8 +189,28 @@ export function Uc4MapLoader({ envelope }: Uc4MapLoaderProps) {
       fontWeight: 600,
     });
 
-    return [baselineArc, rerouteArc, hopMarkers, hopLabels];
-  }, [baseline_path, reroute_path, hopData, colors]);
+    // Animated vessel traversal (MAP-06 / D-04): one TripsLayer carrying BOTH trips so the
+    // vessel runs the baseline then the (longer) reroute on a continuous loop, making the
+    // +76.22h delta self-evident. getTimestamps come from toTrip's cumulative leg_hours —
+    // small hour-scale numbers in the SAME units as currentTime/trailLength (Pitfall 3 — never
+    // epoch-ms). Presentation-only over the already-fetched enriched paths; no re-query.
+    const tripsLayer = new TripsLayer<{
+      path: [number, number][];
+      timestamps: number[];
+    }>({
+      id: "uc4-trips",
+      data: [toTrip(baseline_path), toTrip(reroute_path)],
+      getPath: (d) => d.path,
+      getTimestamps: (d) => d.timestamps,
+      getColor: colors.ARC_REROUTE as RGBA,
+      currentTime,
+      trailLength: TRAIL_LENGTH,
+      fadeTrail: true,
+      widthMinPixels: 4,
+    });
+
+    return [baselineArc, rerouteArc, hopMarkers, hopLabels, tripsLayer];
+  }, [baseline_path, reroute_path, hopData, colors, currentTime]);
 
   // Tooltip: hop marker = its UN/LOCODE.
   const getTooltip = (info: PickingInfo): { text: string } | null => {
@@ -198,6 +253,16 @@ export function Uc4MapLoader({ envelope }: Uc4MapLoaderProps) {
             <span className="text-muted-foreground">Reroute (emerald, raised)</span>
           </span>
         </div>
+        {/* Play/pause toggle (MAP-06 / D-04): gates the rAF loop that animates the vessel
+            traversal. Default playing=true so the demo runs hands-off; pausing freezes the
+            current frame. Pure client state — no re-query. */}
+        <Button
+          className="mt-3 w-full"
+          variant={playing ? "outline" : "default"}
+          onClick={() => setPlaying((p) => !p)}
+        >
+          {playing ? "Pause animation" : "Play animation"}
+        </Button>
       </div>
       <p className="pointer-events-none text-xs text-muted-foreground">
         {hopData.length} of {intendedPortCount} points plotted
