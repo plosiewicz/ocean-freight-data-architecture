@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { hasLiveCreds, uc4LiveFetcher } from "@/lib/arango";
 import type { Uc4Envelope } from "@/lib/golden-types";
 import { serve } from "@/lib/serve";
 
@@ -11,7 +12,9 @@ import { serve } from "@/lib/serve";
 export const runtime = "nodejs";
 
 export async function GET() {
-  // Phase 9: no liveFetcher → serve() always falls to the frozen golden snapshot.
-  const envelope = await serve("uc4");
+  // Phase 12: pass the live ArangoDB fetcher only when the ARANGO_* creds are present
+  // (D-06 creds gate). Absent creds → undefined → serve() serves golden. FORCE_GOLDEN
+  // still overrides to golden, and serve()'s catch still falls back on any throw.
+  const envelope = await serve("uc4", hasLiveCreds() ? uc4LiveFetcher : undefined);
   return NextResponse.json(envelope satisfies Uc4Envelope & { served_by: string });
 }
