@@ -29,6 +29,7 @@ import { join } from "node:path";
 import { Database } from "arangojs";
 
 import type {
+  Uc3ClosureEntry,
   Uc3ClosureGibraltar,
   Uc3Envelope,
   Uc3RerouteImpactSuez,
@@ -161,23 +162,86 @@ const OPEN_SENTINEL = "__NONE_OPEN__"; // snapshot_uc.py:51
 const ORIGIN_ID = "ports/USNYC"; // UC4 + reroute_impact endpoint form (snapshot_uc.py:133)
 const DEST_ID = "ports/CNSHA"; // snapshot_uc.py:134
 const MAXHOPS = 200; // uc3_closure_unreachable.aql @maxhops
-// The exact 12-element SUEZ disabled-lanes list, ORDER-SENSITIVE (golden-pinned, Pitfall 4).
-// Equivalent to disabled_lane_keys_for_chokepoint(LANES+US_US_LANES, rule, "SUEZ") in
-// snapshot_uc.py:135 — reproduce the SAME order; the golden-parity test guards it.
-const SUEZ_DISABLED_LANES: string[] = [
-  "USNYC__CNSHA",
-  "USNYC__JPTYO",
-  "USNYC__KRPUS",
-  "USSAV__CNSHA",
-  "USSAV__JPTYO",
-  "USSAV__KRPUS",
-  "CNSHA__USNYC",
-  "JPTYO__USNYC",
-  "KRPUS__USNYC",
-  "CNSHA__USSAV",
-  "JPTYO__USSAV",
-  "KRPUS__USSAV",
-];
+// The 7 chokepoints in sorted order (matches snapshot_uc.py transit_share / golden order).
+const CHOKEPOINTS: readonly string[] = [
+  "BABELMANDEB",
+  "GIBRALTAR",
+  "GOODHOPE",
+  "HORMUZ",
+  "MALACCA",
+  "PANAMA",
+  "SUEZ",
+] as const;
+
+// The per-chokepoint disabled-lane lists, ORDER-SENSITIVE (golden-pinned, Pitfall 4).
+// Equivalent to disabled_lane_keys_for_chokepoint(LANES+US_US_LANES, rule, cp) in
+// analytics. SUEZ is the ONE source for the reroute_impact_suez parity below (referenced
+// from BOTH this map AND SUEZ_DISABLED_LANES alias — it must stay byte-identical or the
+// reroute_impact_suez golden parity breaks). The 4 inert chokepoints have [].
+const DISABLED_LANES_BY_CHOKEPOINT: Record<string, string[]> = {
+  BABELMANDEB: [],
+  GIBRALTAR: [
+    "USHOU__DEHAM",
+    "USHOU__NLRTM",
+    "USLAX__DEHAM",
+    "USLAX__NLRTM",
+    "USNYC__DEHAM",
+    "USNYC__NLRTM",
+    "USSAV__DEHAM",
+    "USSAV__NLRTM",
+    "DEHAM__USHOU",
+    "NLRTM__USHOU",
+    "DEHAM__USLAX",
+    "NLRTM__USLAX",
+    "DEHAM__USNYC",
+    "NLRTM__USNYC",
+    "DEHAM__USSAV",
+    "NLRTM__USSAV",
+  ],
+  GOODHOPE: [],
+  HORMUZ: [],
+  MALACCA: [],
+  PANAMA: [
+    "USHOU__DEHAM",
+    "USHOU__NLRTM",
+    "USLAX__DEHAM",
+    "USLAX__NLRTM",
+    "USNYC__CNSHA",
+    "USNYC__JPTYO",
+    "USNYC__KRPUS",
+    "USSAV__CNSHA",
+    "USSAV__JPTYO",
+    "USSAV__KRPUS",
+    "DEHAM__USHOU",
+    "NLRTM__USHOU",
+    "DEHAM__USLAX",
+    "NLRTM__USLAX",
+    "CNSHA__USNYC",
+    "JPTYO__USNYC",
+    "KRPUS__USNYC",
+    "CNSHA__USSAV",
+    "JPTYO__USSAV",
+    "KRPUS__USSAV",
+  ],
+  SUEZ: [
+    "USNYC__CNSHA",
+    "USNYC__JPTYO",
+    "USNYC__KRPUS",
+    "USSAV__CNSHA",
+    "USSAV__JPTYO",
+    "USSAV__KRPUS",
+    "CNSHA__USNYC",
+    "JPTYO__USNYC",
+    "KRPUS__USNYC",
+    "CNSHA__USSAV",
+    "JPTYO__USSAV",
+    "KRPUS__USSAV",
+  ],
+};
+
+// Single source for the SUEZ list — reroute_impact_suez parity depends on byte-identity
+// with the golden, so it aliases the map entry rather than duplicating the literal.
+const SUEZ_DISABLED_LANES: string[] = DISABLED_LANES_BY_CHOKEPOINT.SUEZ;
 
 // ---- Coercers that THROW on malformed rows (WR-02/03/04 / Pitfall 3). ----
 // bigquery.ts's num(v)=Number(v) silently yields NaN — DO NOT copy that. THROW instead so a
@@ -224,6 +288,11 @@ export interface Uc3Parts {
   impactBaseline: Record<string, unknown>[];
   openRows: Record<string, unknown>[];
   gibRows: Record<string, unknown>[];
+  // Per-chokepoint inputs for closure_by_chokepoint. closureByCp[cp] = the closure rows
+  // for cp (closed_* totals); rerouteByCp[cp] = the reroute leg rows for cp. The OPEN
+  // baseline reuses openRows for open_* on every entry (no per-cp open recompute).
+  closureByCp: Record<string, Record<string, unknown>[]>;
+  rerouteByCp: Record<string, Record<string, unknown>[]>;
 }
 
 export interface Uc4Parts {
@@ -275,6 +344,34 @@ export function assembleUc3(parts: Uc3Parts): Uc3Envelope {
     closed_origins: parts.gibRows.length, // == 9
   };
 
+  // closure_by_chokepoint (snapshot_uc.py: the per-cp loop): one entry per chokepoint,
+  // sorted by chokepoint. The OPEN baseline reuses parts.openRows for open_* on every
+  // entry (no per-cp recompute). reroute_baseline_hours is the SHARED demo-pair baseline
+  // (parts.impactBaseline); the per-cp reroute legs come from parts.rerouteByCp[cp].
+  const open_reachable_total = totalReachable(parts.openRows); // 29
+  const open_origins = parts.openRows.length; // 9
+  const baselineSum = round12(sum(baseline_legs)); // 355.97 (shared demo-pair baseline)
+  const closure_by_chokepoint: Uc3ClosureEntry[] = CHOKEPOINTS.map((cp) => {
+    const cpClosureRows = parts.closureByCp[cp] ?? [];
+    const cpRerouteLegs = (parts.rerouteByCp[cp] ?? []).map((r) =>
+      round12(num(r.leg_hours)),
+    );
+    const rerouteSum = round12(sum(cpRerouteLegs));
+    return {
+      chokepoint: cp,
+      open_reachable_total,
+      closed_reachable_total: totalReachable(cpClosureRows),
+      open_origins,
+      closed_origins: cpClosureRows.length,
+      reroute_baseline_hours: baselineSum,
+      reroute_reroute_hours: rerouteSum,
+      reroute_delta_hours: round12(rerouteSum - baselineSum),
+      disabled_lane_count: DISABLED_LANES_BY_CHOKEPOINT[cp].length,
+    };
+  }).sort((a, b) =>
+    a.chokepoint < b.chokepoint ? -1 : a.chokepoint > b.chokepoint ? 1 : 0,
+  );
+
   return {
     use_case: "UC3",
     origin: DEMO_ORIGIN, // bare LOCODE at top level (Pitfall 4)
@@ -282,6 +379,7 @@ export function assembleUc3(parts: Uc3Parts): Uc3Envelope {
     transit_share,
     reroute_impact_suez,
     closure_gibraltar,
+    closure_by_chokepoint,
     frozen_at_iso: new Date().toISOString(), // live timestamp (cf. bigquery.ts)
   };
 }
@@ -343,7 +441,22 @@ export async function uc3LiveFetcher(deps: FetcherDeps = {}): Promise<Uc3Envelop
       readAql("uc3_reroute_impact.aql"),
       readAql("uc3_closure_unreachable.aql"),
     ]);
-    const [share, impactReroute, impactBaseline, openRows, gibRows] = await withBudget(
+    // The chokepoints whose demo-pair reroute must be queried live (non-empty lanes:
+    // SUEZ, PANAMA, GIBRALTAR). The 4 inert chokepoints reuse the baseline run (their
+    // disabled_lanes are [] so the path is unchanged — delta 0). NOTE: GIBRALTAR has 16
+    // disabled lanes but a 0 demo-pair delta; run its impactAql with its real lanes so
+    // the live path computes the SAME 0 the golden carries (do NOT inline it).
+    const activeCp = CHOKEPOINTS.filter(
+      (cp) => DISABLED_LANES_BY_CHOKEPOINT[cp].length > 0,
+    );
+    // One flat ordered batch under ONE budget. Layout:
+    //   [0] share
+    //   [1] impactReroute (SUEZ)   [2] impactBaseline   [3] openRows   [4] gibRows
+    //   [5 .. 5+6]  per-cp closure (all 7, in CHOKEPOINTS order)
+    //   [12 ..]     per-cp reroute (activeCp order)
+    const CLOSURE_OFFSET = 5;
+    const REROUTE_OFFSET = CLOSURE_OFFSET + CHOKEPOINTS.length;
+    const results = await withBudget(
       Promise.all([
         run(shareAql, {}),
         run(impactAql, {
@@ -354,10 +467,37 @@ export async function uc3LiveFetcher(deps: FetcherDeps = {}): Promise<Uc3Envelop
         run(impactAql, { origin: ORIGIN_ID, dest: DEST_ID, disabled_lanes: [] }),
         run(closureAql, { closed: OPEN_SENTINEL, maxhops: MAXHOPS }),
         run(closureAql, { closed: FRAGMENTING_CHOKEPOINT, maxhops: MAXHOPS }),
+        ...CHOKEPOINTS.map((cp) => run(closureAql, { closed: cp, maxhops: MAXHOPS })),
+        ...activeCp.map((cp) =>
+          run(impactAql, {
+            origin: ORIGIN_ID,
+            dest: DEST_ID,
+            disabled_lanes: DISABLED_LANES_BY_CHOKEPOINT[cp],
+          }),
+        ),
       ]),
       deps.budgetMs,
     );
-    return assembleUc3({ share, impactReroute, impactBaseline, openRows, gibRows });
+    const [share, impactReroute, impactBaseline, openRows, gibRows] = results;
+    const closureByCp: Record<string, Record<string, unknown>[]> = {};
+    CHOKEPOINTS.forEach((cp, i) => {
+      closureByCp[cp] = results[CLOSURE_OFFSET + i];
+    });
+    const rerouteByCp: Record<string, Record<string, unknown>[]> = {};
+    // Inert chokepoints reuse the baseline run (delta 0); active ones use their own run.
+    for (const cp of CHOKEPOINTS) rerouteByCp[cp] = impactBaseline;
+    activeCp.forEach((cp, i) => {
+      rerouteByCp[cp] = results[REROUTE_OFFSET + i];
+    });
+    return assembleUc3({
+      share,
+      impactReroute,
+      impactBaseline,
+      openRows,
+      gibRows,
+      closureByCp,
+      rerouteByCp,
+    });
   } catch (err) {
     // Scrubbed log only — never the arangojs error object, the creds, or the token (T-12-03).
     console.error("[uc3LiveFetcher]", err instanceof Error ? err.message : String(err));
