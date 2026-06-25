@@ -21,8 +21,15 @@ import { IconLayer, ScatterplotLayer } from "@deck.gl/layers";
 import type { Layer, PickingInfo } from "@deck.gl/core";
 
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { resolveMapColors, type RGBA } from "@/lib/map-colors";
-import type { Uc3Enriched } from "@/lib/golden-types";
+import type { Uc3ClosureEntry, Uc3Enriched } from "@/lib/golden-types";
 
 const UcMap = dynamic(() => import("./uc-map").then((m) => m.UcMap), {
   ssr: false,
@@ -70,19 +77,44 @@ export interface Uc3MapLoaderProps {
 }
 
 export function Uc3MapLoader({ envelope }: Uc3MapLoaderProps) {
-  // Closure simulation is client-state only (D-03/D-04). Default = Gibraltar open.
+  // Closure simulation is client-state only (D-03/D-04). Default = Gibraltar selected, open.
   const [closed, setClosed] = useState(false);
+  const [selected, setSelected] = useState<string>(GIBRALTAR_KEY);
+
+  // UX choice: changing the selected chokepoint RESETS `closed` to false (open) so the
+  // overlay always reflects an honest fresh selection — cleaner than carrying a closed
+  // flag across a different chokepoint's metrics.
+  const selectChokepoint = (cp: string) => {
+    setSelected(cp);
+    setClosed(false);
+  };
 
   // Resolve the theme colors ONCE on mount (RESEARCH Pitfall 5), not per-frame.
   const colors = useMemo(() => resolveMapColors(), []);
 
-  const { closure_gibraltar, transit_share, ports } = envelope;
+  const { closure_by_chokepoint, transit_share, ports } = envelope;
 
-  // The Gibraltar display name comes from the enriched transit_share entry (e.g. "Strait
-  // of Gibraltar"), never the raw "GIBRALTAR" key (UI-SPEC copy rule).
-  const gibraltarName =
-    transit_share.find((c) => c.chokepoint === GIBRALTAR_KEY)?.name ??
-    GIBRALTAR_KEY;
+  // Map chokepoint key -> display name from the enriched transit_share (e.g. "Strait of
+  // Gibraltar"), never the raw key (UI-SPEC copy rule). Falls back to the key.
+  const nameFor = (cp: string) =>
+    transit_share.find((c) => c.chokepoint === cp)?.name ?? cp;
+
+  // The 7-option selector list, by DISPLAY NAME, sorted by name for stable order.
+  const chokepointOptions = useMemo(
+    () =>
+      transit_share
+        .map((c) => ({ key: c.chokepoint, name: c.name }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [transit_share],
+  );
+
+  // The selected entry from closure_by_chokepoint (fall back to the GIBRALTAR entry).
+  const entry: Uc3ClosureEntry =
+    closure_by_chokepoint.find((e) => e.chokepoint === selected) ??
+    closure_by_chokepoint.find((e) => e.chokepoint === GIBRALTAR_KEY) ??
+    closure_by_chokepoint[0];
+
+  const selectedName = nameFor(selected);
 
   // The 10-01 join already dropped null-coord ports, so envelope.ports are all plottable.
   // Still compute "N of M plotted": M = the intended explicit UC3 port set derived from the
@@ -112,9 +144,9 @@ export function Uc3MapLoader({ envelope }: Uc3MapLoaderProps) {
         lon: c.lon,
         lat: c.lat,
         pct: c.transit_share_pct,
-        closed: closed && c.chokepoint === GIBRALTAR_KEY,
+        closed: closed && c.chokepoint === selected,
       })),
-    [transit_share, closed],
+    [transit_share, closed, selected],
   );
 
   const layers: Layer[] = useMemo(() => {
@@ -156,7 +188,7 @@ export function Uc3MapLoader({ envelope }: Uc3MapLoaderProps) {
       // Pitfall 5). It fades the CHOKEPOINT GLYPH only: the envelope carries aggregate
       // reachability COUNTS (29/11), not a per-port reachable set, so there is nothing
       // to fade per-port (RESEARCH Pitfall 4).
-      updateTriggers: { getColor: [closed] },
+      updateTriggers: { getColor: [closed, selected] },
       transitions: { getColor: { duration: 600 } },
     });
 
@@ -174,30 +206,65 @@ export function Uc3MapLoader({ envelope }: Uc3MapLoaderProps) {
     };
   };
 
-  const { open_reachable_total, closed_reachable_total, open_origins } =
-    closure_gibraltar;
+  const {
+    open_reachable_total,
+    closed_reachable_total,
+    open_origins,
+    reroute_delta_hours,
+  } = entry;
   const reachabilityDrop = open_reachable_total - closed_reachable_total;
 
-  // Absolute overlay: the closure toggle + reachability callout. All counts are read from
-  // closure_gibraltar — NEVER hardcoded (UI-SPEC copy-consistency rule). The closed-state
-  // sentence reuses the exact phrasing from uc3-summary.tsx so map + summary agree.
+  // Absolute overlay: the chokepoint selector + close/reopen toggle + DUAL-metric callout.
+  // ALL numbers/names are read from `entry` (closure_by_chokepoint) + transit_share names
+  // — NEVER hardcoded (UI-SPEC copy-consistency rule). Pure client-state, no re-query.
   const overlay = (
     <div className="pointer-events-none absolute left-3 top-3 flex max-w-xs flex-col gap-2">
       <div className="pointer-events-auto rounded-lg border bg-card p-4 shadow-sm">
+        <Select value={selected} onValueChange={selectChokepoint}>
+          <SelectTrigger className="mb-3 w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {chokepointOptions.map((o) => (
+              <SelectItem key={o.key} value={o.key}>
+                {o.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         {closed ? (
           <>
+            {/* Metric 1 — reachability. */}
             <p className="text-3xl font-semibold tracking-tight tabular-nums">
               <span className="text-foreground">{open_reachable_total}</span>{" "}
               <span className="text-muted-foreground">→</span>{" "}
-              <span className="text-destructive">{closed_reachable_total}</span>{" "}
+              <span
+                className={
+                  reachabilityDrop > 0 ? "text-destructive" : "text-foreground"
+                }
+              >
+                {closed_reachable_total}
+              </span>{" "}
               <span className="text-sm font-normal text-muted-foreground">
                 reachable pairs
               </span>
             </p>
-            <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-              Closing {gibraltarName} cuts network reachability from{" "}
-              {open_reachable_total} to {closed_reachable_total} reachable pairs —
-              a loss of {reachabilityDrop} across {open_origins} origins.
+            <p
+              className={`mt-2 text-sm leading-relaxed ${
+                reachabilityDrop > 0
+                  ? "text-destructive"
+                  : "text-muted-foreground"
+              }`}
+            >
+              {reachabilityDrop > 0
+                ? `Closing ${selectedName} cuts reachability by ${reachabilityDrop} across ${open_origins} origins.`
+                : `Network reroutes around ${selectedName} — no origin→destination pairs lost.`}
+            </p>
+            {/* Metric 2 — reroute cost on the demo pair USNYC→CNSHA. */}
+            <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
+              {reroute_delta_hours > 0
+                ? `+${reroute_delta_hours.toFixed(2)}h added on USNYC→CNSHA as traffic detours around ${selectedName}.`
+                : "No added transit on the demo pair."}
             </p>
           </>
         ) : (
@@ -218,7 +285,7 @@ export function Uc3MapLoader({ envelope }: Uc3MapLoaderProps) {
           variant={closed ? "outline" : "default"}
           onClick={() => setClosed((c) => !c)}
         >
-          {closed ? `Reopen ${gibraltarName}` : "Close Gibraltar"}
+          {closed ? `Reopen ${selectedName}` : `Close ${selectedName}`}
         </Button>
       </div>
       <p className="pointer-events-none text-xs text-muted-foreground">
