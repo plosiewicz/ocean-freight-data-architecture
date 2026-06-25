@@ -92,6 +92,32 @@ function closureRows(closed: string, counts: number[]): Record<string, unknown>[
 const OPEN_ROWS = closureRows("__NONE_OPEN__", [5, 4, 4, 4, 3, 3, 2, 2, 2]); // sum 29, len 9
 const GIB_ROWS = closureRows("GIBRALTAR", [2, 2, 1, 1, 1, 1, 1, 1, 1]); // sum 11, len 9
 
+// Per-chokepoint closure rows: GIBRALTAR-closed sums to 11 (fragmenting); the other 6
+// stay at the OPEN baseline 29 (no fragmentation). Reuse the existing 29/11 fixtures.
+const CHOKEPOINTS_FIXTURE = [
+  "BABELMANDEB",
+  "GIBRALTAR",
+  "GOODHOPE",
+  "HORMUZ",
+  "MALACCA",
+  "PANAMA",
+  "SUEZ",
+];
+const CLOSURE_BY_CP: Record<string, Record<string, unknown>[]> = Object.fromEntries(
+  CHOKEPOINTS_FIXTURE.map((cp) => [
+    cp,
+    cp === "GIBRALTAR" ? GIB_ROWS : closureRows(cp, [5, 4, 4, 4, 3, 3, 2, 2, 2]),
+  ]),
+);
+// Per-chokepoint reroute leg rows: SUEZ/PANAMA take the reroute path (sum 432.19 ->
+// delta 76.22 vs baseline 355.97); the inert 4 reuse the baseline path (delta 0).
+const REROUTE_BY_CP: Record<string, Record<string, unknown>[]> = Object.fromEntries(
+  CHOKEPOINTS_FIXTURE.map((cp) => [
+    cp,
+    cp === "SUEZ" || cp === "PANAMA" ? REROUTE_PATH_ROWS : BASELINE_PATH_ROWS,
+  ]),
+);
+
 function uc3Parts() {
   return {
     share: SHARE_ROWS,
@@ -99,6 +125,8 @@ function uc3Parts() {
     impactBaseline: BASELINE_PATH_ROWS,
     openRows: OPEN_ROWS,
     gibRows: GIB_ROWS,
+    closureByCp: CLOSURE_BY_CP,
+    rerouteByCp: REROUTE_BY_CP,
   };
 }
 function uc4Parts() {
@@ -172,6 +200,49 @@ describe("uc3 assembly (4-run AQL fixtures -> golden-shaped Uc3Envelope)", () =>
     expect(c.open_origins).toBe(9); // row COUNT
     expect(c.closed_origins).toBe(9);
     expect(typeof c.open_reachable_total).toBe("number");
+  });
+
+  it("assembles closure_by_chokepoint with 7 sorted entries, the right per-cp totals/deltas/lane-counts", () => {
+    const env = assembleUc3(uc3Parts());
+    const entries = env.closure_by_chokepoint;
+    expect(entries.map((e) => e.chokepoint)).toEqual([
+      "BABELMANDEB",
+      "GIBRALTAR",
+      "GOODHOPE",
+      "HORMUZ",
+      "MALACCA",
+      "PANAMA",
+      "SUEZ",
+    ]);
+    const by = Object.fromEntries(entries.map((e) => [e.chokepoint, e]));
+    // GIBRALTAR fragments (29 -> 11); the other 6 stay at the open baseline 29.
+    expect(by.GIBRALTAR.closed_reachable_total).toBe(11);
+    for (const cp of ["BABELMANDEB", "GOODHOPE", "HORMUZ", "MALACCA", "PANAMA", "SUEZ"]) {
+      expect(by[cp].closed_reachable_total).toBe(29);
+    }
+    // Every entry shares the open baseline 29 / 9 origins.
+    for (const e of entries) {
+      expect(e.open_reachable_total).toBe(29);
+      expect(e.open_origins).toBe(9);
+      expect(e.closed_origins).toBe(9);
+      expect(typeof e.reroute_delta_hours).toBe("number");
+    }
+    // SUEZ/PANAMA add 76.22h on the demo pair; the inert 4 add 0.
+    expect(by.SUEZ.reroute_delta_hours).toBe(76.22);
+    expect(by.PANAMA.reroute_delta_hours).toBe(76.22);
+    expect(by.SUEZ.reroute_baseline_hours).toBe(355.97);
+    expect(by.SUEZ.reroute_reroute_hours).toBe(432.19);
+    for (const cp of ["BABELMANDEB", "GIBRALTAR", "GOODHOPE", "HORMUZ", "MALACCA"]) {
+      expect(by[cp].reroute_delta_hours).toBe(0);
+    }
+    // disabled_lane_count comes from DISABLED_LANES_BY_CHOKEPOINT (SUEZ=12, PANAMA=20,
+    // GIBRALTAR=16, the other 4 = 0).
+    expect(by.SUEZ.disabled_lane_count).toBe(12);
+    expect(by.PANAMA.disabled_lane_count).toBe(20);
+    expect(by.GIBRALTAR.disabled_lane_count).toBe(16);
+    for (const cp of ["BABELMANDEB", "GOODHOPE", "HORMUZ", "MALACCA"]) {
+      expect(by[cp].disabled_lane_count).toBe(0);
+    }
   });
 });
 

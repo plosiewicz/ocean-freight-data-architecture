@@ -83,8 +83,26 @@ export interface Uc3RerouteImpactSuez {
   closed: string;
 }
 
+/**
+ * One per-chokepoint closure + reroute-impact entry (the 7-chokepoint generalization
+ * of closure_gibraltar + reroute_impact_suez). Carries ONLY counts/floats/strings —
+ * disabled_lane_COUNT, never the lane list or any credential material (T-lwx-02).
+ */
+export interface Uc3ClosureEntry {
+  chokepoint: string;
+  open_reachable_total: number;
+  closed_reachable_total: number;
+  open_origins: number;
+  closed_origins: number;
+  reroute_baseline_hours: number;
+  reroute_reroute_hours: number;
+  reroute_delta_hours: number;
+  disabled_lane_count: number;
+}
+
 export interface Uc3Envelope {
   closure_gibraltar: Uc3ClosureGibraltar;
+  closure_by_chokepoint: Uc3ClosureEntry[];
   transit_share: Uc3TransitShare[];
   reroute_impact_suez: Uc3RerouteImpactSuez;
   origin: string;
