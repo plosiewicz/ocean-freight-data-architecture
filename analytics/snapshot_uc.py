@@ -99,6 +99,8 @@ def snapshot_uc3(db: Any = None) -> dict[str, Any]:
 
     # Genuine unreachability: OPEN baseline vs GIBRALTAR-closed reachable-port counts,
     # so the closure-induced DROP (29 -> fewer) is recoverable from the snapshot alone.
+    # baseline_rows is the SHARED OPEN baseline — reused below by closure_by_chokepoint
+    # (do NOT recompute the open baseline per chokepoint).
     baseline_rows = uc3_closure.run_closure(OPEN_SENTINEL, db=db)
     gib_rows = uc3_closure.run_closure(FRAGMENTING_CHOKEPOINT, db=db)
     closure_gibraltar = {
@@ -109,6 +111,36 @@ def snapshot_uc3(db: Any = None) -> dict[str, Any]:
         "closed_origins": int(len(gib_rows)),
     }
 
+    # Per-chokepoint closure + reroute-impact (the 7-chokepoint generalization of the
+    # single-Gibraltar / single-Suez story above). One entry per chokepoint present in
+    # transit_share; the SHARED OPEN baseline (baseline_rows) is reused for open_* on
+    # every entry. SUEZ/PANAMA carry a > 0 reroute delta on USNYC->CNSHA; GIBRALTAR
+    # fragments (closed_reachable_total drops); the rest are inert (delta 0, no drop).
+    open_total = _total_reachable(baseline_rows)
+    open_origins = int(len(baseline_rows))
+    closure_by_chokepoint = []
+    for cp in (str(r["chokepoint"]) for r in transit_share):
+        cp_rows = uc3_closure.run_closure(cp, db=db)
+        cp_impact = uc3_closure.run_reroute_impact(cp, DEMO_ORIGIN, DEMO_DEST, db=db)
+        closure_by_chokepoint.append(
+            {
+                "chokepoint": cp,
+                "open_reachable_total": open_total,
+                "closed_reachable_total": _total_reachable(cp_rows),
+                "open_origins": open_origins,
+                "closed_origins": int(len(cp_rows)),
+                "reroute_baseline_hours": round(
+                    float(sum(cp_impact["baseline_legs"])), 12
+                ),
+                "reroute_reroute_hours": round(
+                    float(sum(cp_impact["reroute_legs"])), 12
+                ),
+                "reroute_delta_hours": round(float(cp_impact["delta"]), 12),
+                "disabled_lane_count": int(len(cp_impact["disabled_lanes"])),
+            }
+        )
+    closure_by_chokepoint.sort(key=lambda e: e["chokepoint"])
+
     return {
         "use_case": "UC3",
         "origin": DEMO_ORIGIN,
@@ -116,6 +148,7 @@ def snapshot_uc3(db: Any = None) -> dict[str, Any]:
         "transit_share": transit_share,
         "reroute_impact_suez": reroute_impact_suez,
         "closure_gibraltar": closure_gibraltar,
+        "closure_by_chokepoint": closure_by_chokepoint,
     }
 
 
