@@ -29,7 +29,7 @@ SELECT
   c.carrier_name                                                AS carrier_name,
   f.origin_unlocode                                             AS origin_unlocode,
   f.dest_unlocode                                               AS dest_unlocode,
-  CONCAT(f.origin_unlocode, '-', f.dest_unlocode)               AS lane_key,
+  CONCAT(f.origin_unlocode, '__', f.dest_unlocode)              AS lane_key,
   COUNT(*)                                                      AS legs,
   ROUND(AVG(f.schedule_delta), 2)                               AS avg_delay_hours,
   -- WR-02: a leg is on-time when 0 <= schedule_delta <= 24h. The lower bound (>= 0)
@@ -58,7 +58,7 @@ JOIN `data-architecture-msds683.ofa_star.dim_carrier` AS c
 -- would drop every answerable row (the lane is not in dim_lane), so the analytic lane
 -- is the leg's own (origin,dest) pair materialized above; dim_lane is supplementary.
 LEFT JOIN `data-architecture-msds683.ofa_star.dim_lane` AS l
-  ON l.lane_key = CONCAT(f.origin_unlocode, '-', f.dest_unlocode)
+  ON l.lane_key = CONCAT(f.origin_unlocode, '__', f.dest_unlocode)
 -- Only legs whose schedule_delta is populated (a proforma lane matched) are answerable.
 -- WR-02: also exclude inverted/zero-transit legs (transit_hours <= 0) — a leg whose
 -- arrival precedes its departure (mis-ordered calls, overlapping timestamps, or an

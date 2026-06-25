@@ -347,7 +347,7 @@ def _vessel_snapshot_from_mapping(mapping: dict) -> pd.DataFrame:
 def _lanes_dataframe() -> pd.DataFrame:
     """Conformed dim_lane source: one row per directed international lane (lane_key)."""
     rows = [
-        {"lane_key": f"{o}-{d}", "origin_unlocode": o, "dest_unlocode": d}
+        {"lane_key": f"{o}__{d}", "origin_unlocode": o, "dest_unlocode": d}
         for (o, d) in LANES
     ]
     return pd.DataFrame(rows, columns=["lane_key", "origin_unlocode", "dest_unlocode"])
