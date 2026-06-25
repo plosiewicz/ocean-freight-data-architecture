@@ -14,6 +14,13 @@
 // round the scaled value and divide back: ROUND(x * 10) / 10.
 FOR cp IN chokepoints
   LET n = LENGTH(FOR l IN INBOUND cp transits_chokepoint RETURN 1)
+  // SCOPE (260625-lwx): feature only the chokepoints THIS US-trade lane network actually
+  // transits (PANAMA / GIBRALTAR / SUEZ). The other reference chokepoints (BABELMANDEB /
+  // GOODHOPE / HORMUZ / MALACCA) carry zero lanes here, so drop them from the transit-share /
+  // closure / criticality analysis rather than render dead 0/0 rows. They remain in the
+  // `chokepoints` reference dimension — this scopes the ANALYSIS, not the model. n>0 ⟺ some
+  // lane's chokepoints array contains cp (the chokepoints_for_lane rule).
+  FILTER n > 0
   LET total = LENGTH(lanes)
   RETURN {
     chokepoint: cp._key,

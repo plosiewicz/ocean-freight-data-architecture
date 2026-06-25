@@ -57,15 +57,13 @@ type _Uc4FetcherIsLive = typeof uc4LiveFetcher extends () => Promise<Uc4Envelope
 
 // ---- AQL-shaped fixtures DERIVED FROM the committed golden (no live cluster). ----
 // transit_share rows: {chokepoint, transiting_lanes, total_lanes, transit_share_pct}.
-// Provided UNSORTED to prove the assembler sorts by chokepoint.
+// The share AQL now FILTERs n>0 (260625-lwx scope), so it returns ONLY the 3 active
+// chokepoints — the 4 zero-lane reference chokepoints never reach the assembler. Provided
+// UNSORTED to prove the assembler sorts by chokepoint.
 const SHARE_ROWS = [
   { chokepoint: "SUEZ", transiting_lanes: 12, total_lanes: 40, transit_share_pct: 30.0 },
   { chokepoint: "PANAMA", transiting_lanes: 20, total_lanes: 40, transit_share_pct: 50.0 },
   { chokepoint: "GIBRALTAR", transiting_lanes: 16, total_lanes: 40, transit_share_pct: 40.0 },
-  { chokepoint: "BABELMANDEB", transiting_lanes: 0, total_lanes: 40, transit_share_pct: 0.0 },
-  { chokepoint: "GOODHOPE", transiting_lanes: 0, total_lanes: 40, transit_share_pct: 0.0 },
-  { chokepoint: "HORMUZ", transiting_lanes: 0, total_lanes: 40, transit_share_pct: 0.0 },
-  { chokepoint: "MALACCA", transiting_lanes: 0, total_lanes: 40, transit_share_pct: 0.0 },
 ];
 
 // reroute_impact / uc4 path rows: {port, leg_hours}.
@@ -92,17 +90,9 @@ function closureRows(closed: string, counts: number[]): Record<string, unknown>[
 const OPEN_ROWS = closureRows("__NONE_OPEN__", [5, 4, 4, 4, 3, 3, 2, 2, 2]); // sum 29, len 9
 const GIB_ROWS = closureRows("GIBRALTAR", [2, 2, 1, 1, 1, 1, 1, 1, 1]); // sum 11, len 9
 
-// Per-chokepoint closure rows: GIBRALTAR-closed sums to 11 (fragmenting); the other 6
-// stay at the OPEN baseline 29 (no fragmentation). Reuse the existing 29/11 fixtures.
-const CHOKEPOINTS_FIXTURE = [
-  "BABELMANDEB",
-  "GIBRALTAR",
-  "GOODHOPE",
-  "HORMUZ",
-  "MALACCA",
-  "PANAMA",
-  "SUEZ",
-];
+// Per-chokepoint closure rows for the 3 ACTIVE chokepoints: GIBRALTAR-closed sums to 11
+// (fragmenting); PANAMA/SUEZ stay at the OPEN baseline 29 (resilient — reroute exists).
+const CHOKEPOINTS_FIXTURE = ["GIBRALTAR", "PANAMA", "SUEZ"];
 const CLOSURE_BY_CP: Record<string, Record<string, unknown>[]> = Object.fromEntries(
   CHOKEPOINTS_FIXTURE.map((cp) => [
     cp,
@@ -110,7 +100,7 @@ const CLOSURE_BY_CP: Record<string, Record<string, unknown>[]> = Object.fromEntr
   ]),
 );
 // Per-chokepoint reroute leg rows: SUEZ/PANAMA take the reroute path (sum 432.19 ->
-// delta 76.22 vs baseline 355.97); the inert 4 reuse the baseline path (delta 0).
+// delta 76.22 vs baseline 355.97); GIBRALTAR's 16 lanes don't touch the demo pair (delta 0).
 const REROUTE_BY_CP: Record<string, Record<string, unknown>[]> = Object.fromEntries(
   CHOKEPOINTS_FIXTURE.map((cp) => [
     cp,
@@ -140,13 +130,9 @@ describe("uc3 assembly (4-run AQL fixtures -> golden-shaped Uc3Envelope)", () =>
     // bare LOCODE at the top level (Pitfall 4)
     expect(env.origin).toBe("USNYC");
     expect(env.dest).toBe("CNSHA");
-    // sorted by chokepoint
+    // sorted by chokepoint — only the 3 active chokepoints (share AQL FILTERs n>0)
     expect(env.transit_share.map((r) => r.chokepoint)).toEqual([
-      "BABELMANDEB",
       "GIBRALTAR",
-      "GOODHOPE",
-      "HORMUZ",
-      "MALACCA",
       "PANAMA",
       "SUEZ",
     ]);
@@ -202,22 +188,15 @@ describe("uc3 assembly (4-run AQL fixtures -> golden-shaped Uc3Envelope)", () =>
     expect(typeof c.open_reachable_total).toBe("number");
   });
 
-  it("assembles closure_by_chokepoint with 7 sorted entries, the right per-cp totals/deltas/lane-counts", () => {
+  it("assembles closure_by_chokepoint with 3 sorted active entries, the right per-cp totals/deltas/lane-counts", () => {
     const env = assembleUc3(uc3Parts());
     const entries = env.closure_by_chokepoint;
-    expect(entries.map((e) => e.chokepoint)).toEqual([
-      "BABELMANDEB",
-      "GIBRALTAR",
-      "GOODHOPE",
-      "HORMUZ",
-      "MALACCA",
-      "PANAMA",
-      "SUEZ",
-    ]);
+    // Only the 3 active chokepoints (derived from the n>0-filtered transit_share).
+    expect(entries.map((e) => e.chokepoint)).toEqual(["GIBRALTAR", "PANAMA", "SUEZ"]);
     const by = Object.fromEntries(entries.map((e) => [e.chokepoint, e]));
-    // GIBRALTAR fragments (29 -> 11); the other 6 stay at the open baseline 29.
+    // GIBRALTAR fragments (29 -> 11); PANAMA/SUEZ stay at the open baseline 29 (resilient).
     expect(by.GIBRALTAR.closed_reachable_total).toBe(11);
-    for (const cp of ["BABELMANDEB", "GOODHOPE", "HORMUZ", "MALACCA", "PANAMA", "SUEZ"]) {
+    for (const cp of ["PANAMA", "SUEZ"]) {
       expect(by[cp].closed_reachable_total).toBe(29);
     }
     // Every entry shares the open baseline 29 / 9 origins.
@@ -227,22 +206,16 @@ describe("uc3 assembly (4-run AQL fixtures -> golden-shaped Uc3Envelope)", () =>
       expect(e.closed_origins).toBe(9);
       expect(typeof e.reroute_delta_hours).toBe("number");
     }
-    // SUEZ/PANAMA add 76.22h on the demo pair; the inert 4 add 0.
+    // SUEZ/PANAMA add 76.22h on the demo pair; GIBRALTAR's lanes don't touch it (delta 0).
     expect(by.SUEZ.reroute_delta_hours).toBe(76.22);
     expect(by.PANAMA.reroute_delta_hours).toBe(76.22);
     expect(by.SUEZ.reroute_baseline_hours).toBe(355.97);
     expect(by.SUEZ.reroute_reroute_hours).toBe(432.19);
-    for (const cp of ["BABELMANDEB", "GIBRALTAR", "GOODHOPE", "HORMUZ", "MALACCA"]) {
-      expect(by[cp].reroute_delta_hours).toBe(0);
-    }
-    // disabled_lane_count comes from DISABLED_LANES_BY_CHOKEPOINT (SUEZ=12, PANAMA=20,
-    // GIBRALTAR=16, the other 4 = 0).
+    expect(by.GIBRALTAR.reroute_delta_hours).toBe(0);
+    // disabled_lane_count comes from DISABLED_LANES_BY_CHOKEPOINT (SUEZ=12, PANAMA=20, GIBRALTAR=16).
     expect(by.SUEZ.disabled_lane_count).toBe(12);
     expect(by.PANAMA.disabled_lane_count).toBe(20);
     expect(by.GIBRALTAR.disabled_lane_count).toBe(16);
-    for (const cp of ["BABELMANDEB", "GOODHOPE", "HORMUZ", "MALACCA"]) {
-      expect(by[cp].disabled_lane_count).toBe(0);
-    }
   });
 });
 

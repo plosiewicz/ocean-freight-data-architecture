@@ -276,7 +276,7 @@ export function Uc3MapLoader({ envelope }: Uc3MapLoaderProps) {
               </span>
             </p>
             <p className="mt-2 text-sm text-muted-foreground">
-              All 7 chokepoints open
+              All {transit_share.length} chokepoints open
             </p>
           </>
         )}

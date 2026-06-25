@@ -162,13 +162,13 @@ const OPEN_SENTINEL = "__NONE_OPEN__"; // snapshot_uc.py:51
 const ORIGIN_ID = "ports/USNYC"; // UC4 + reroute_impact endpoint form (snapshot_uc.py:133)
 const DEST_ID = "ports/CNSHA"; // snapshot_uc.py:134
 const MAXHOPS = 200; // uc3_closure_unreachable.aql @maxhops
-// The 7 chokepoints in sorted order (matches snapshot_uc.py transit_share / golden order).
+// The ACTIVE chokepoints in sorted order — the only ones this US-trade lane network
+// transits (260625-lwx scope tightening). The transit-share AQL now FILTERs n>0, so live
+// `share` returns exactly these three; the 4 zero-lane reference chokepoints (BABELMANDEB /
+// GOODHOPE / HORMUZ / MALACCA) are dropped from the analysis (kept only as reference geo).
+// transiting_lanes>0 ⟺ non-empty DISABLED_LANES_BY_CHOKEPOINT, so this set == the share set.
 const CHOKEPOINTS: readonly string[] = [
-  "BABELMANDEB",
   "GIBRALTAR",
-  "GOODHOPE",
-  "HORMUZ",
-  "MALACCA",
   "PANAMA",
   "SUEZ",
 ] as const;
@@ -177,9 +177,9 @@ const CHOKEPOINTS: readonly string[] = [
 // Equivalent to disabled_lane_keys_for_chokepoint(LANES+US_US_LANES, rule, cp) in
 // analytics. SUEZ is the ONE source for the reroute_impact_suez parity below (referenced
 // from BOTH this map AND SUEZ_DISABLED_LANES alias — it must stay byte-identical or the
-// reroute_impact_suez golden parity breaks). The 4 inert chokepoints have [].
+// reroute_impact_suez golden parity breaks). Only the 3 ACTIVE chokepoints appear (the 4
+// zero-lane reference chokepoints carried [] and are dropped with the share-filter scope).
 const DISABLED_LANES_BY_CHOKEPOINT: Record<string, string[]> = {
-  BABELMANDEB: [],
   GIBRALTAR: [
     "USHOU__DEHAM",
     "USHOU__NLRTM",
@@ -198,9 +198,6 @@ const DISABLED_LANES_BY_CHOKEPOINT: Record<string, string[]> = {
     "DEHAM__USSAV",
     "NLRTM__USSAV",
   ],
-  GOODHOPE: [],
-  HORMUZ: [],
-  MALACCA: [],
   PANAMA: [
     "USHOU__DEHAM",
     "USHOU__NLRTM",
@@ -348,10 +345,13 @@ export function assembleUc3(parts: Uc3Parts): Uc3Envelope {
   // sorted by chokepoint. The OPEN baseline reuses parts.openRows for open_* on every
   // entry (no per-cp recompute). reroute_baseline_hours is the SHARED demo-pair baseline
   // (parts.impactBaseline); the per-cp reroute legs come from parts.rerouteByCp[cp].
+  // Iterate the SHARE-derived chokepoints (snapshot_uc.py loops transit_share), NOT a
+  // hardcoded list — so the live envelope mirrors whatever the (now n>0-filtered) share
+  // query returned, keeping byte-parity with the golden the freezer wrote from the same query.
   const open_reachable_total = totalReachable(parts.openRows); // 29
   const open_origins = parts.openRows.length; // 9
   const baselineSum = round12(sum(baseline_legs)); // 355.97 (shared demo-pair baseline)
-  const closure_by_chokepoint: Uc3ClosureEntry[] = CHOKEPOINTS.map((cp) => {
+  const closure_by_chokepoint: Uc3ClosureEntry[] = transit_share.map(({ chokepoint: cp }) => {
     const cpClosureRows = parts.closureByCp[cp] ?? [];
     const cpRerouteLegs = (parts.rerouteByCp[cp] ?? []).map((r) =>
       round12(num(r.leg_hours)),
@@ -441,19 +441,19 @@ export async function uc3LiveFetcher(deps: FetcherDeps = {}): Promise<Uc3Envelop
       readAql("uc3_reroute_impact.aql"),
       readAql("uc3_closure_unreachable.aql"),
     ]);
-    // The chokepoints whose demo-pair reroute must be queried live (non-empty lanes:
-    // SUEZ, PANAMA, GIBRALTAR). The 4 inert chokepoints reuse the baseline run (their
-    // disabled_lanes are [] so the path is unchanged — delta 0). NOTE: GIBRALTAR has 16
-    // disabled lanes but a 0 demo-pair delta; run its impactAql with its real lanes so
-    // the live path computes the SAME 0 the golden carries (do NOT inline it).
+    // The chokepoints whose demo-pair reroute must be queried live. All 3 active chokepoints
+    // (GIBRALTAR / PANAMA / SUEZ) carry non-empty lanes, so all 3 get their own reroute run;
+    // the baseline-reuse fallback below is defensive (no inert chokepoints remain in scope).
+    // NOTE: GIBRALTAR has 16 disabled lanes but a 0 demo-pair delta; run its impactAql with
+    // its real lanes so the live path computes the SAME 0 the golden carries (do NOT inline it).
     const activeCp = CHOKEPOINTS.filter(
       (cp) => DISABLED_LANES_BY_CHOKEPOINT[cp].length > 0,
     );
     // One flat ordered batch under ONE budget. Layout:
     //   [0] share
     //   [1] impactReroute (SUEZ)   [2] impactBaseline   [3] openRows   [4] gibRows
-    //   [5 .. 5+6]  per-cp closure (all 7, in CHOKEPOINTS order)
-    //   [12 ..]     per-cp reroute (activeCp order)
+    //   [5 .. ]     per-cp closure (the active chokepoints, in CHOKEPOINTS order)
+    //   [ .. ]      per-cp reroute (activeCp order)
     const CLOSURE_OFFSET = 5;
     const REROUTE_OFFSET = CLOSURE_OFFSET + CHOKEPOINTS.length;
     const results = await withBudget(
