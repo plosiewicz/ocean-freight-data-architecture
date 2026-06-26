@@ -1,4 +1,4 @@
-# Ocean Freight Forwarder — Data Architecture (MSDS 683)
+# Ocean Freight Forwarder — Data Architecture
 
 An end-to-end data architecture for a freight forwarder / 3PL in global ocean container
 logistics. Real maritime data (AIS vessel tracking, port/vessel/carrier reference,
@@ -7,10 +7,8 @@ analytical stores: a **BigQuery star-schema warehouse** for OLAP questions and a
 **ArangoDB property graph** for network questions. Each of the four use cases runs on
 whichever store fits the workload.
 
-> Group project for **MSDS 683 (Data Architecture)**, 3 people. Graded on turning a domain
-> into a data model, making and defending schema decisions, building at least one cloud ETL
-> process, orchestrating it with Airflow, and demoing it. It also seeds the **MSDS 681 (Data
-> Lakehouse)** build next term.
+> A 3-person group project: take a real domain, turn it into a data model, build a cloud
+> ETL pipeline, orchestrate it with Airflow, and demo it end to end.
 
 ## The four use cases
 
@@ -60,7 +58,7 @@ flowchart TB
 ## Orchestration — the `ofa_warehouse` DAG
 
 This project runs **plain Apache Airflow 3.0**, not Cloud Composer. The DAG uses only
-standard operators so it stays Composer-portable (decision D-01): it runs locally with
+standard operators so it stays Composer-portable: it runs locally with
 `airflow dags test` today and lifts onto Cloud Composer 3 unchanged if the project moves to
 managed Airflow. One conform step produces Silver. The BigQuery and ArangoDB load legs run
 in parallel off that Silver, and `verify` fans in only after both stores finish.
@@ -212,7 +210,7 @@ flowchart LR
 | Schedules, bookings, container events | Synthetic (seeded) | JSONL | Proforma timing, booking/event volume |
 | Lane network + chokepoint assignments | Synthetic (curated) | constants | The route graph and chokepoint transits |
 
-**Real vs. synthetic.** AIS and reference data are real but bounded to a defensible slice
+**Real vs. synthetic.** AIS and reference data are real but limited to a bounded slice
 (Q1 2024, four US ports: Houston, LA, NYC, Savannah) to keep scan cost and graph size in
 check. The booking/event/schedule layer and the foreign-port lane network are synthetic, since
 no single public feed carries a forwarder's bookings end to end. We generate them
@@ -253,36 +251,31 @@ Useful focused targets:
 
 | Target | What it does |
 |--------|--------------|
-| `make verify` | Full ship-gate ladder (Bronze → Silver → BQ → cross-store → UC) |
+| `make verify` | Full verification ladder (Bronze → Silver → BQ → cross-store → UC) |
 | `make verify-uc` | Live UC3/UC4 anti-degeneracy check against the ArangoDB cluster |
 | `make verify-cluster` | Connectivity + load smoke test against the cluster |
 | `make secret-gate` | No-committed-secrets scan (same check CI runs) |
 
 ## Current state
 
-Design and a working vertical slice are both done.
+The design is done and a working vertical slice runs end to end.
 
-- **M1 Domain & dataset** — locked.
-- **M2 Domain model** — ER, dimensional, and graph design complete (see `docs/deck/`).
 - **Pipeline** — Bronze ingestion, Silver conform/derive, BigQuery star load, and ArangoDB
   graph load all run; the `ofa_warehouse` DAG wires them with a fan-in `verify`.
-- **Demo** — all four UCs answer; `docs/demo.ipynb` runs from a clean clone against frozen
-  golden snapshots, so the demo holds with no live credentials.
-- **Next** — M3 midterm pitch and the final demo.
+- **Modeling** — ER, dimensional, and graph design are complete (see `docs/`).
+- **Demo** — all four use cases answer; `docs/demo.ipynb` runs from a clean clone against
+  frozen golden snapshots, so the demo holds with no live credentials.
 
 ## Tech stack
 
 | Layer | Choice |
 |-------|--------|
 | Raw + staging | GCS, Hive-style date partitioning; Parquet for tabular, JSONL for events |
-| Orchestration | Plain Apache Airflow 3.0, Composer-portable (D-01) |
+| Orchestration | Plain Apache Airflow 3.0, Composer-portable |
 | OLAP store | BigQuery — native tables, star schema, partitioned + clustered |
 | Graph store | Managed ArangoDB 3.12 cluster |
 | Graph analytics | AQL traversal / `SHORTEST_PATH` + Graph Analytics Engine (GAE) server-side; NetworkX is the fallback |
 | Synthetic data | Faker (pinned) + NumPy `default_rng` + pandas/pyarrow |
-
-Full prescriptive stack, version pins, and the "what not to use" rationale live in
-[`CLAUDE.md`](CLAUDE.md).
 
 ## Repo layout
 
@@ -296,51 +289,25 @@ Full prescriptive stack, version pins, and the "what not to use" rationale live 
 | `analytics/` | UC3/UC4 runners, criticality, snapshot builders |
 | `lib/` | Shared clients + loaders — GCS, ArangoDB, graph loader/queries |
 | `dags/` | The `ofa_warehouse` Airflow DAG |
-| `scripts/` | Bronze landing, verify ship-gates, UC freeze, demo build |
+| `scripts/` | Bronze landing, verify checks, UC freeze, demo build |
 | `tests/` | pytest suite (conform, derive, geofence, graph load, cross-store, DAG) |
-| `docs/` | Design deck source (`deck/`), demo notebook, run-from-clone guide |
+| `docs/` | Design notes (`deck/`), demo notebook, run-from-clone guide |
 | `reference/` | Small committed reference tables (e.g. chokepoints) |
 | `samples/` | Proof-of-pull extracts from each real source |
 | `web/` | Next.js demo app (live BigQuery with golden fallback) |
 
-## Design docs
+## Design notes
 
-Design lives as deck-source Markdown in [`docs/deck/`](docs/deck) (source of truth for the
-shared Google Slides deck; the Mermaid renders on GitHub).
+Design notes live as Markdown in [`docs/deck/`](docs/deck); the Mermaid renders on GitHub.
 
 | Doc | Covers |
 |-----|--------|
-| [m2-er-logical.md](docs/deck/m2-er-logical.md) | Logical ER + fact/dimension classification |
-| [m2-bq-star.md](docs/deck/m2-bq-star.md) | Star: grains, conformed dims, SCD, partition/cluster |
-| [m2-star-vs-snowflake.md](docs/deck/m2-star-vs-snowflake.md) | Defended star-over-snowflake rationale |
-| [m2-arango-graph.md](docs/deck/m2-arango-graph.md) | Property-graph model, named graph `ocean_network` |
-| [m2-conformed-keys.md](docs/deck/m2-conformed-keys.md) | Conformed-key bridge + hybrid justification |
-| [m2-gap-analysis.md](docs/deck/m2-gap-analysis.md) | Data-needs vs. available-sources reconciliation |
+| [er-logical.md](docs/deck/m2-er-logical.md) | Logical ER + fact/dimension classification |
+| [bq-star.md](docs/deck/m2-bq-star.md) | Star: grains, conformed dims, SCD, partition/cluster |
+| [star-vs-snowflake.md](docs/deck/m2-star-vs-snowflake.md) | Star-over-snowflake rationale |
+| [arango-graph.md](docs/deck/m2-arango-graph.md) | Property-graph model, named graph `ocean_network` |
+| [conformed-keys.md](docs/deck/m2-conformed-keys.md) | Conformed-key bridge + hybrid justification |
+| [gap-analysis.md](docs/deck/m2-gap-analysis.md) | Data-needs vs. available-sources reconciliation |
 
-M1 docs (`m1-team-domain.md`, `m1-use-cases.md`, `m1-source-inventory.md`,
+Domain and use-case notes (`m1-team-domain.md`, `m1-use-cases.md`, `m1-source-inventory.md`,
 `m1-real-vs-synthetic.md`, `m1-billing-guard.md`) are in the same folder.
-
-## M4 GitHub checklist
-
-### Tier 1 — must-have
-
-| Item | Status | Note |
-|------|--------|------|
-| README (what / data source / how to run / state) | Yes | This file |
-| Data ingestion — script or notes | Yes | `ingest/` + the `make bronze` flow |
-| Transformation scripts | Yes | `silver/` (conform/derive), `sql/`, `aql/` |
-| No secrets/credentials committed | Yes | `.env` gitignored; `.env.template` only; `make secret-gate` + CI |
-| Schema design visible in the repo | Yes | `sql/ddl_star.sql`, `docs/deck/m2-*`, diagrams above |
-
-### Tier 2 — good practice
-
-| Item | Status | Note |
-|------|--------|------|
-| Dependencies / config / env files | Yes | `pyproject.toml`, `.env.template`, `Makefile` |
-| Commit history shows incremental work | Yes | Per-phase TDD commits (RED → GREEN → golden) |
-| Note on data source / sample-data approach | Yes | "Data sources" section + `samples/` |
-| Folder structure separates code by purpose | Yes | "Repo layout" section |
-
-Tier 3 (aspirational) is largely present already — orchestration DAG (`dags/`), automated
-data-quality gates (`scripts/verify.py`), CI (`.github/workflows/`), and ADRs — but it is
-out of scope for this checklist pass.
