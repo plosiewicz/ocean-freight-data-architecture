@@ -1,5 +1,9 @@
 {
   "version": 3,
+<<<<<<< Updated upstream
+=======
+  "buildCommand": "cd web && npm install && npm run build",
+>>>>>>> Stashed changes
   "builds": [
     {
       "src": "web/package.json",
