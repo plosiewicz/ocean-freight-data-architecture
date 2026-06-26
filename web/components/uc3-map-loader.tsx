@@ -17,7 +17,7 @@ import { useMemo, useState } from "react";
 
 import dynamic from "next/dynamic";
 
-import { IconLayer, ScatterplotLayer } from "@deck.gl/layers";
+import { ArcLayer, IconLayer, ScatterplotLayer } from "@deck.gl/layers";
 import type { Layer, PickingInfo } from "@deck.gl/core";
 
 import { Button } from "@/components/ui/button";
@@ -70,6 +70,17 @@ interface ChokepointDatum {
   lat: number;
   pct: number;
   closed: boolean;
+}
+
+interface LaneDatum {
+  from: [number, number];
+  to: [number, number];
+  disabled: boolean;
+}
+
+// Normalize keys by stripping the "ports/" prefix if present.
+function normKey(key: string): string {
+  return key.startsWith("ports/") ? key.slice("ports/".length) : key;
 }
 
 export interface Uc3MapLoaderProps {
@@ -136,6 +147,62 @@ export function Uc3MapLoader({ envelope }: Uc3MapLoaderProps) {
     [ports],
   );
 
+  const laneData: LaneDatum[] = useMemo(() => {
+    // Build a port coordinate lookup from the enriched ports
+    const portsByLocode = new Map<string, { lon: number; lat: number }>();
+    for (const port of ports) {
+      portsByLocode.set(port.unlocode, { lon: port.lon, lat: port.lat });
+    }
+
+    // Collect all lanes from disabled_lanes strings (e.g., "USNYC__CNSHA")
+    const disabledSet = new Set<string>();
+    for (const lane of envelope.reroute_impact_suez.disabled_lanes) {
+      disabledSet.add(lane);
+    }
+
+    // Extract unique lane pairs from the envelope + disabled_lanes
+    const lanes = new Map<string, boolean>();
+    
+    // Add disabled lanes explicitly
+    for (const lane of disabledSet) {
+      lanes.set(lane, true);
+    }
+    
+    // Add some connective lanes between the ports (origin-dest and ports in disabled lanes)
+    // This gives us a reasonable network visualization even without explicit route data
+    const originLocode = normKey(envelope.origin);
+    const destLocode = normKey(envelope.dest);
+    
+    // Create potential lanes connecting all ports (simplified network)
+    const allPorts = Array.from(portsByLocode.keys());
+    for (let i = 0; i < allPorts.length; i++) {
+      for (let j = i + 1; j < allPorts.length; j++) {
+        const key = `${allPorts[i]}__${allPorts[j]}`;
+        const revKey = `${allPorts[j]}__${allPorts[i]}`;
+        if (!lanes.has(key) && !lanes.has(revKey)) {
+          // Mark non-disabled lanes
+          lanes.set(key, false);
+        }
+      }
+    }
+
+    // Convert lane pairs to arc segments
+    const arcs: LaneDatum[] = [];
+    for (const [lane, disabled] of lanes) {
+      const [from, to] = lane.split("__");
+      const fromCoord = portsByLocode.get(from);
+      const toCoord = portsByLocode.get(to);
+      if (fromCoord && toCoord) {
+        arcs.push({
+          from: [fromCoord.lon, fromCoord.lat],
+          to: [toCoord.lon, toCoord.lat],
+          disabled,
+        });
+      }
+    }
+    return arcs;
+  }, [ports, envelope.reroute_impact_suez.disabled_lanes, envelope.origin, envelope.dest]);
+
   const chokepointData: ChokepointDatum[] = useMemo(
     () =>
       transit_share.map((c) => ({
@@ -162,6 +229,21 @@ export function Uc3MapLoader({ envelope }: Uc3MapLoaderProps) {
       radiusMaxPixels: 9,
       stroked: false,
       pickable: true,
+    });
+
+    // Shipping lanes as arcs between ports. Non-disabled lanes are muted, disabled are red.
+    const laneLayer = new ArcLayer<LaneDatum>({
+      id: "uc3-lanes",
+      data: laneData,
+      getSourcePosition: (d) => d.from,
+      getTargetPosition: (d) => d.to,
+      getSourceColor: (d) =>
+        d.disabled ? colors.CHOKEPOINT_CLOSED : colors.ARC_BASELINE,
+      getTargetColor: (d) =>
+        d.disabled ? colors.CHOKEPOINT_CLOSED : colors.ARC_BASELINE,
+      getWidth: (d) => (d.disabled ? 2 : 1),
+      getHeight: 0.2,
+      widthUnits: "pixels",
     });
 
     const chokepointLayer = new IconLayer<ChokepointDatum>({
@@ -192,8 +274,8 @@ export function Uc3MapLoader({ envelope }: Uc3MapLoaderProps) {
       transitions: { getColor: { duration: 600 } },
     });
 
-    return [portLayer, chokepointLayer];
-  }, [portData, chokepointData, colors]);
+    return [portLayer, laneLayer, chokepointLayer];
+  }, [portData, laneData, chokepointData, colors]);
 
   // Tooltip: port = its UN/LOCODE (the enriched port set carries no name, only coords);
   // chokepoint = "{display name} — {pct}% of lanes transit" (UI-SPEC copy).
