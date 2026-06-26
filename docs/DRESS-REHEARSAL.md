@@ -3,7 +3,7 @@
 > **Purpose:** Prove the demo **cannot hard-fail**. With **both** live stores
 > (BigQuery and the ArangoDB cluster) unavailable, all four use-case views must
 > still **render fully** — no error page — and each must visibly fall back to the
-> frozen snapshot, shown by the amber **"Snapshot"** provenance pill in the page
+> frozen snafrjedipshot, shown by the amber **"Snapshot"** provenance pill in the page
 > header. This is the DEPLOY-03 evidence that the live graded demo is safe even if
 > a store is unreachable on demo day.
 >
