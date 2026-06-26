@@ -1,28 +1,25 @@
 "use client";
 
 // uc4-map-loader — the "use client" wrapper that mounts the shared deck.gl shell for UC4
-// and draws the baseline vs reroute paths as overlaid arcs (Phase 10, MAP-05 / D-05).
+// and draws the baseline vs reroute physical routes as overlaid path lines.
 //
 // Mirrors uc3-map-loader.tsx: a client wrapper that re-derives display over the
 // ALREADY-FETCHED enriched envelope — no fetch, no serve(), no re-query (CHART-05 ethos /
-// D-04). There is NO toggle here — both arcs are overlaid simultaneously; the contrast IS
+// D-04). There is NO toggle here — both routes are overlaid simultaneously; the contrast IS
 // the story (D-05). The delta callout reads its values from the enriched envelope
 // (delta / baseline_hours / reroute_hours), NEVER a hardcoded literal.
 //
 // deck.gl is ESM-only and touches window, so the actual map is loaded via next/dynamic
 // with ssr:false — LEGAL here because this file is a Client Component (RESEARCH Pattern 2).
 //
-// RESEARCH A4 LOCKED: baseline and reroute are distinguished by COLOR + WIDTH + ARC HEIGHT,
-// not stroke patterns. ArcLayer cannot render a solid-vs-broken stroke distinction
-// (Pitfall 4), and the path-style extensions package is intentionally NOT a dependency. The
-// color-blind second channel is the height/width difference, not hue alone (muted+flat
-// baseline vs emerald+raised reroute).
+// This map renders the actual port-to-port route geometry as continuous lines rather than
+// abstract arc glyphs, making the physical route visible on the map.
 
 import { useEffect, useMemo, useState } from "react";
 
 import dynamic from "next/dynamic";
 
-import { ArcLayer, ScatterplotLayer, TextLayer } from "@deck.gl/layers";
+import { PathLayer, ScatterplotLayer, TextLayer } from "@deck.gl/layers";
 import { TripsLayer } from "@deck.gl/geo-layers";
 import type { Layer, PickingInfo } from "@deck.gl/core";
 
@@ -52,10 +49,10 @@ const TIME_STEP = 2;
 // Trailing comet length behind the vessel, in the same hour units as currentTime.
 const TRAIL_LENGTH = 60;
 
-// A from→to arc segment between two consecutive hops (deck.gl is [lon, lat] order).
-interface ArcSeg {
-  from: [number, number];
-  to: [number, number];
+// A route line datum for deck.gl PathLayer (deck.gl is [lon, lat] order).
+type Coords = [number, number];
+interface RouteDatum {
+  path: Coords[];
 }
 
 // A plotted hop marker + its UN/LOCODE label.
@@ -65,13 +62,68 @@ interface HopDatum {
   lat: number;
 }
 
-// RESEARCH §Code Examples toSeg: turn an ordered hop list into consecutive from/to
-// segment pairs. A 2-hop baseline yields 1 segment; the 3-hop reroute yields 2.
-function toSegments(hops: Uc4PathHopEnriched[]): ArcSeg[] {
-  return hops.slice(0, -1).map((h, i) => ({
-    from: [h.lon, h.lat],
-    to: [hops[i + 1].lon, hops[i + 1].lat],
-  }));
+// Interpolate a great-circle segment between two WGS84 points.
+// This gives the UC4 route lines a more realistic oceanic curvature instead of a
+// straight projected line between ports.
+function interpolateGreatCircle(
+  start: Coords,
+  end: Coords,
+  steps: number,
+): Coords[] {
+  const [lon0, lat0] = start;
+  const [lon1, lat1] = end;
+  const φ0 = (lat0 * Math.PI) / 180;
+  const λ0 = (lon0 * Math.PI) / 180;
+  const φ1 = (lat1 * Math.PI) / 180;
+  const λ1 = (lon1 * Math.PI) / 180;
+  const Δλ = λ1 - λ0;
+  const sinφ0 = Math.sin(φ0);
+  const cosφ0 = Math.cos(φ0);
+  const sinφ1 = Math.sin(φ1);
+  const cosφ1 = Math.cos(φ1);
+  const cosΔλ = Math.cos(Δλ);
+  const δ = Math.acos(Math.min(1, Math.max(-1, sinφ0 * sinφ1 + cosφ0 * cosφ1 * cosΔλ)));
+
+  if (!Number.isFinite(δ) || δ === 0) {
+    return [start, end];
+  }
+
+  const path: Coords[] = [];
+  for (let i = 0; i <= steps; i += 1) {
+    const f = i / steps;
+    const sinδ = Math.sin(δ);
+    const A = Math.sin((1 - f) * δ) / sinδ;
+    const B = Math.sin(f * δ) / sinδ;
+    const x = A * cosφ0 * Math.cos(λ0) + B * cosφ1 * Math.cos(λ1);
+    const y = A * cosφ0 * Math.sin(λ0) + B * cosφ1 * Math.sin(λ1);
+    const z = A * sinφ0 + B * sinφ1;
+    const φ = Math.atan2(z, Math.sqrt(x * x + y * y));
+    const λ = Math.atan2(y, x);
+    path.push([(λ * 180) / Math.PI, (φ * 180) / Math.PI]);
+  }
+  return path;
+}
+
+// Turn an ordered hop list into a continuous route path, sampling each leg as a
+// curved great-circle segment.
+function toRoute(hops: Uc4PathHopEnriched[]): RouteDatum[] {
+  if (hops.length === 0) return [{ path: [] }];
+
+  const path: Coords[] = [];
+  const segmentSteps = 64;
+  for (let i = 0; i < hops.length - 1; i += 1) {
+    const start: Coords = [hops[i].lon, hops[i].lat];
+    const end: Coords = [hops[i + 1].lon, hops[i + 1].lat];
+    const segment = interpolateGreatCircle(start, end, segmentSteps);
+    if (i > 0) segment.shift();
+    path.push(...segment);
+  }
+
+  if (hops.length === 1) {
+    path.push([hops[0].lon, hops[0].lat]);
+  }
+
+  return [{ path }];
 }
 
 export interface Uc4MapLoaderProps {
@@ -129,32 +181,31 @@ export function Uc4MapLoader({ envelope }: Uc4MapLoaderProps) {
   }, [baseline_path, reroute_path]);
 
   const layers: Layer[] = useMemo(() => {
-    // Baseline arc: muted hue, thin, flat (getHeight 0.3). USNYC → CNSHA direct.
-    const baselineArc = new ArcLayer<ArcSeg>({
-      id: "uc4-baseline-arc",
-      data: toSegments(baseline_path),
-      getSourcePosition: (d) => d.from,
-      getTargetPosition: (d) => d.to,
-      getSourceColor: colors.ARC_BASELINE as RGBA,
-      getTargetColor: colors.ARC_BASELINE as RGBA,
+    // Baseline route: muted hue, thin line. USNYC → CNSHA direct.
+    const baselineRoute = new PathLayer<RouteDatum>({
+      id: "uc4-baseline-route",
+      data: toRoute(baseline_path),
+      getPath: (d) => d.path,
+      getColor: colors.ARC_BASELINE as RGBA,
       getWidth: 3,
-      getHeight: 0.3,
       widthUnits: "pixels",
+      rounded: true,
+      capRounded: true,
+      jointRounded: true,
     });
 
-    // Reroute arc: emerald hue, thicker, raised (getHeight 0.6). Multi-hop
-    // USNYC → USLAX → CNSHA. The width + height difference is the color-blind-safe
-    // second channel beyond hue (RESEARCH A4 lock).
-    const rerouteArc = new ArcLayer<ArcSeg>({
-      id: "uc4-reroute-arc",
-      data: toSegments(reroute_path),
-      getSourcePosition: (d) => d.from,
-      getTargetPosition: (d) => d.to,
-      getSourceColor: colors.ARC_REROUTE as RGBA,
-      getTargetColor: colors.ARC_REROUTE as RGBA,
+    // Reroute route: emerald hue, thicker. Draws the physical reroute path through
+    // USLAX and across the Pacific as a continuous route line.
+    const rerouteRoute = new PathLayer<RouteDatum>({
+      id: "uc4-reroute-route",
+      data: toRoute(reroute_path),
+      getPath: (d) => d.path,
+      getColor: colors.ARC_REROUTE as RGBA,
       getWidth: 4,
-      getHeight: 0.6,
       widthUnits: "pixels",
+      rounded: true,
+      capRounded: true,
+      jointRounded: true,
     });
 
     // Hop markers so each endpoint (incl. the intermediate USLAX) is clearly placed.
@@ -209,7 +260,7 @@ export function Uc4MapLoader({ envelope }: Uc4MapLoaderProps) {
       widthMinPixels: 4,
     });
 
-    return [baselineArc, rerouteArc, hopMarkers, hopLabels, tripsLayer];
+    return [baselineRoute, rerouteRoute, hopMarkers, hopLabels, tripsLayer];
   }, [baseline_path, reroute_path, hopData, colors, currentTime]);
 
   // Tooltip: hop marker = its UN/LOCODE.
@@ -232,17 +283,14 @@ export function Uc4MapLoader({ envelope }: Uc4MapLoaderProps) {
           {baseline_hours.toFixed(2)}h baseline → {reroute_hours.toFixed(2)}h
           reroute
         </p>
-        {/* Arc legend — A4 locked corrected string (ArcLayer color/width/height only; the
-            UI-SPEC stroke-pattern wording is superseded because ArcLayer cannot render that
-            distinction). Each swatch uses the same --muted-foreground / --map-accent colors
-            as its arc. */}
+        {/* Route legend — show the actual route lines instead of abstract arcs. */}
         <div className="mt-3 flex flex-col gap-1.5 text-xs">
           <span className="flex items-center gap-2">
             <span
               className="inline-block h-0.5 w-6 rounded-full bg-muted-foreground"
               aria-hidden
             />
-            <span className="text-muted-foreground">Baseline (muted, flat)</span>
+            <span className="text-muted-foreground">Baseline route (muted)</span>
           </span>
           <span className="flex items-center gap-2">
             <span
@@ -250,7 +298,7 @@ export function Uc4MapLoader({ envelope }: Uc4MapLoaderProps) {
               style={{ backgroundColor: "var(--map-accent)" }}
               aria-hidden
             />
-            <span className="text-muted-foreground">Reroute (emerald, raised)</span>
+            <span className="text-muted-foreground">Reroute route (emerald)</span>
           </span>
         </div>
         {/* Play/pause toggle (MAP-06 / D-04): gates the rAF loop that animates the vessel
