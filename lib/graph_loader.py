@@ -403,6 +403,29 @@ def build_operates_edges(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+# --------------------------------------------------------------------------- #
+# Asia<->US-East canal assignment: Suez XOR Panama (the DEFENDED model fix).    #
+#                                                                              #
+# A real Far-East<->US-East-Coast service routes via EXACTLY ONE canal, not    #
+# both: an eastbound USNYC<->Shanghai box transits the Suez Canal (the         #
+# Asia->Med->Atlantic great-circle path), while a Savannah service is          #
+# commonly Panama-routed (the all-water Pacific->Caribbean->US-East-Gulf       #
+# path). The pre-fix rule assigned BOTH canals to every Asia<->US-East lane,   #
+# which made closing Suez and closing Panama disable the SAME lane set with    #
+# the SAME +76.22h reroute delta — a modeling ARTIFACT (review notes 3/4/5,    #
+# REQ-14-3), not a real finding. Splitting the lanes by US-East port (USNYC=   #
+# Suez, USSAV=Panama) makes each canal closure disable a DISTINCT lane set     #
+# with a DISTINCT reroute delta, which is the realistic and defensible model.  #
+#                                                                              #
+# USNYC is pinned as the SUEZ-routed port (RESEARCH Assumption A1 / Pitfall 5) #
+# so the featured demo pair USNYC->CNSHA (snapshot_uc.DEMO_ORIGIN/DEST) stays  #
+# NON-DEGENERATE after closing Suez: the USNYC->USLAX->CNSHA trans-Pacific     #
+# detour exists (via US_US_LANES + the LAX trans-Pacific lane), so the demo    #
+# still shows a positive reroute delta rather than an unreachable result.      #
+SUEZ_US_EAST: frozenset[str] = frozenset({"USNYC"})
+PANAMA_US_EAST: frozenset[str] = frozenset({"USSAV"})
+
+
 def chokepoints_for_lane(origin: str, dest: str) -> tuple[str, ...]:
     """Deterministic geographic rule: which chokepoints a lane transits (D-09).
 
@@ -410,7 +433,15 @@ def chokepoints_for_lane(origin: str, dest: str) -> tuple[str, ...]:
     direction-insensitive (a lane and its reverse transit the same chokepoints).
     A fixed dict lookup is preferred over GEO_DISTANCE for determinism (RESEARCH
     Pattern 3). Returns ``()`` for unmapped pairs (no edge emitted). Rationale:
-      * Far-East (CHN/JPN/KOR) <-> US-East (NYC/SAV) -> Suez OR Panama (Asia-USEC).
+      * Far-East (CHN/JPN/KOR) <-> US-East -> Suez **XOR** Panama, split by the
+        US-East port: USNYC routes via SUEZ, USSAV routes via PANAMA. A real
+        service uses exactly ONE canal, so closing each canal must disable a
+        DISTINCT lane set with a DISTINCT reroute delta — assigning BOTH canals
+        to every lane was a modeling artifact (REQ-14-3) that made Suez and
+        Panama identical. USNYC is the SUEZ-routed port (A1) so the featured
+        USNYC->CNSHA demo pair stays non-degenerate (USLAX trans-Pacific detour
+        exists) when Suez closes. This is a single source of truth: route edges
+        and ``transits_chokepoint`` edges derive purely from this function.
       * Far-East <-> US-West (LAX) / US-Gulf (HOU) -> trans-Pacific, no canal.
       * Europe (DEU/NLD) <-> US-East -> Gibraltar (Med approach) for the trans-Atlantic.
       * Europe <-> US-West/Gulf -> Panama (Atlantic->Pacific) or Gibraltar.
@@ -437,7 +468,12 @@ def chokepoints_for_lane(origin: str, dest: str) -> tuple[str, ...]:
 
     if foreign_country in far_east:
         if is_us_east:
-            return ("SUEZ", "PANAMA")
+            # Suez XOR Panama, split by US-East port (single canal per lane).
+            if us_port in SUEZ_US_EAST:
+                return ("SUEZ",)
+            if us_port in PANAMA_US_EAST:
+                return ("PANAMA",)
+            return ()  # defensive: every us_east port must be assigned above
         return ()  # trans-Pacific: no curated canal transit
     if foreign_country in europe:
         if is_us_east:
