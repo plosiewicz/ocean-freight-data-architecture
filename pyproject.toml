@@ -60,6 +60,16 @@ dependencies = [
     "networkx",
     # python-dotenv loads the gitignored repo-root .env carrying the ARANGO_* creds.
     "python-dotenv",
+    # --- Phase 14 (REQ-14-4): offline sea-route geometry (14-01 Task 1) ---
+    # searoute EXACT == 1.6.0 (no caret) — net-new dependency installed behind the
+    # blocking-human legitimacy checkpoint (T-14-SC; pypi.org/project/searoute 1.6.0,
+    # Apache-2.0, 3.6-yr/57k-dl history, slopcheck [OK], deps geojson+networkx already
+    # present). OFFLINE-ONLY: imported only by lib/searoute_geometry.py at generate/freeze
+    # time — NEVER added to web/ and NEVER called at runtime (CSP-restricted). Geometry is
+    # cosmetic; the analytic delta math stays on the haversine/18kn weights. Pinned exact
+    # beside the Faker/numpy determinism-anchor convention (searoute is itself deterministic,
+    # no RNG, so the polyline output is byte-stable for the golden freeze).
+    "searoute==1.6.0",
 ]
 
 [project.optional-dependencies]
