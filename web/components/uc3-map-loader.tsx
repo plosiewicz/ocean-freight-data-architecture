@@ -17,7 +17,7 @@ import { useMemo, useState } from "react";
 
 import dynamic from "next/dynamic";
 
-import { IconLayer, ScatterplotLayer } from "@deck.gl/layers";
+import { IconLayer, PathLayer, ScatterplotLayer } from "@deck.gl/layers";
 import type { Layer, PickingInfo } from "@deck.gl/core";
 
 import { Button } from "@/components/ui/button";
@@ -29,7 +29,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { resolveMapColors, type RGBA } from "@/lib/map-colors";
-import type { Uc3ClosureEntry, Uc3Enriched } from "@/lib/golden-types";
+import type {
+  Uc3ClosureEntry,
+  Uc3DisabledLanePath,
+  Uc3Enriched,
+} from "@/lib/golden-types";
 
 const UcMap = dynamic(() => import("./uc-map").then((m) => m.UcMap), {
   ssr: false,
@@ -149,7 +153,34 @@ export function Uc3MapLoader({ envelope }: Uc3MapLoaderProps) {
     [transit_share, closed, selected],
   );
 
+  // REQ-14-2: the baked sea-route polylines of the SELECTED chokepoint's disabled lanes.
+  // Drawn only while the chokepoint is CLOSED (the X glyph is up) — closing the chokepoint
+  // is what highlights which lanes it severs. Pure client-state over the enriched envelope:
+  // the polylines are baked in the golden (no runtime geometry, CSP-safe). A live ArangoDB
+  // fall-back carries an empty disabled_lane_paths, so this simply draws nothing then.
+  const disabledLanePaths: Uc3DisabledLanePath[] = useMemo(
+    () => (closed ? entry.disabled_lane_paths ?? [] : []),
+    [closed, entry.disabled_lane_paths],
+  );
+
   const layers: Layer[] = useMemo(() => {
+    // REQ-14-2: highlight the disabled lanes of the closed chokepoint as red polylines
+    // (the CHOKEPOINT_CLOSED palette, same red as the X glyph). getPath reads the baked
+    // [lon,lat] waypoints verbatim. Keyed on selected/closed via updateTriggers so deck.gl
+    // re-evaluates the accessor when the selection or closure flips.
+    const disabledLaneLayer = new PathLayer<Uc3DisabledLanePath>({
+      id: "uc3-disabled-lanes",
+      data: disabledLanePaths,
+      getPath: (d) => d.waypoints,
+      getColor: colors.CHOKEPOINT_CLOSED as RGBA,
+      getWidth: 3,
+      widthUnits: "pixels",
+      widthMinPixels: 2,
+      capRounded: true,
+      jointRounded: true,
+      updateTriggers: { getColor: [selected, closed] },
+    });
+
     const portLayer = new ScatterplotLayer<PortDatum>({
       id: "uc3-ports",
       data: portData,
@@ -192,8 +223,9 @@ export function Uc3MapLoader({ envelope }: Uc3MapLoaderProps) {
       transitions: { getColor: { duration: 600 } },
     });
 
-    return [portLayer, chokepointLayer];
-  }, [portData, chokepointData, colors]);
+    // Lanes drawn FIRST (under the markers) so the port/chokepoint glyphs stay on top.
+    return [disabledLaneLayer, portLayer, chokepointLayer];
+  }, [disabledLanePaths, selected, closed, portData, chokepointData, colors]);
 
   // Tooltip: port = its UN/LOCODE (the enriched port set carries no name, only coords);
   // chokepoint = "{display name} — {pct}% of lanes transit" (UI-SPEC copy).

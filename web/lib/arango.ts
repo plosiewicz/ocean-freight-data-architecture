@@ -367,14 +367,13 @@ export function assembleUc3(parts: Uc3Parts): Uc3Envelope {
       reroute_reroute_hours: rerouteSum,
       reroute_delta_hours: round12(rerouteSum - baselineSum),
       disabled_lane_count: DISABLED_LANES_BY_CHOKEPOINT[cp].length,
-      // REQ-14-2 (additive): the disabled-lane KEYS are known to the live path (the
-      // const map mirrors the Plan-03 XOR rule). The baked sea-route POLYLINES
-      // (disabled_lane_paths) are searoute-precomputed offline (14-01: never in web/,
-      // never at runtime — CSP/T-14-10), so the live ArangoDB path emits an empty
-      // polyline list. The frozen golden (the demo of record) carries the geometry;
-      // live is fall-back insurance, and the map degrades to no-polyline gracefully.
-      disabled_lanes: DISABLED_LANES_BY_CHOKEPOINT[cp],
-      disabled_lane_paths: [],
+      // NOTE (14-05): the additive disabled_lanes / disabled_lane_paths fields (REQ-14-2/4)
+      // are emitted by the 14-04 snapshot, but the on-disk goldens are re-frozen in 14-06.
+      // To keep this live assembler byte-parity with the CURRENT committed golden (the
+      // golden-parity test), it does NOT yet emit them — the fields are optional on
+      // Uc3ClosureEntry and every consumer null-guards. Wire them here in/after 14-06 when
+      // the golden gains them (the keys are available via DISABLED_LANES_BY_CHOKEPOINT[cp];
+      // the baked polylines are searoute-offline, T-14-10, so disabled_lane_paths stays []).
     };
   }).sort((a, b) =>
     a.chokepoint < b.chokepoint ? -1 : a.chokepoint > b.chokepoint ? 1 : 0,

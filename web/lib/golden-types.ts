@@ -117,10 +117,12 @@ export interface Uc3ClosureEntry {
   disabled_lane_count: number;
   // REQ-14-2 (additive): the actual disabled-lane KEYS for the closed chokepoint, so
   // the map can highlight the affected lanes (not just the count). Pure geometry/keys —
-  // no credential material (T-14-09).
-  disabled_lanes: string[];
+  // no credential material (T-14-09). OPTIONAL: the 14-04 snapshot emits these, but the
+  // on-disk goldens are re-frozen in 14-06 — until then a stale golden / live ArangoDB
+  // fall-back legitimately omits them, and every consumer null-guards.
+  disabled_lanes?: string[];
   // REQ-14-4 (additive): one baked cosmetic sea-route polyline per disabled lane.
-  disabled_lane_paths: Uc3DisabledLanePath[];
+  disabled_lane_paths?: Uc3DisabledLanePath[];
 }
 
 export interface Uc3Envelope {
