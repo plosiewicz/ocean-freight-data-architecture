@@ -1,9 +1,9 @@
 import { Uc3MapLoader } from "@/components/uc3-map-loader";
 import { UcHeader } from "@/components/uc-header";
 import { Uc3Summary } from "@/components/uc3-summary";
-import { hasLiveCreds, uc3LiveFetcher } from "@/lib/arango";
+import { hasLiveCreds, uc3LiveFetcher, uc4LiveFetcher } from "@/lib/arango";
 import { rankChokepoints, readCriticality } from "@/lib/criticality";
-import type { ServedBy, Uc3Enriched } from "@/lib/golden-types";
+import type { ServedBy, Uc3Enriched, Uc4Enriched } from "@/lib/golden-types";
 import { cachedLiveFetcher } from "@/lib/page-fetcher";
 import { serve } from "@/lib/serve";
 
@@ -31,6 +31,12 @@ export default async function Uc3Page() {
   )) as Uc3Enriched & {
     served_by: ServedBy;
   };
+  const routeEnvelope = (await serve(
+    "uc4",
+    cachedLiveFetcher("uc4", hasLiveCreds, uc4LiveFetcher),
+  )) as Uc4Enriched & {
+    served_by: ServedBy;
+  };
 
   // MAP-04: read the FROZEN betweenness criticality server-side (mirrors serve()'s
   // node:fs read of the golden), then join it to the already-fetched transit_share by
@@ -41,8 +47,8 @@ export default async function Uc3Page() {
   return (
     <main className="mx-auto max-w-5xl px-6 py-16">
       <UcHeader id="uc3" servedBy={envelope.served_by} />
-      <Uc3MapLoader envelope={envelope} />
-      <Uc3Summary data={envelope} ranked={ranked} />
+      <Uc3MapLoader envelope={envelope} routeEnvelope={routeEnvelope} />
+      <Uc3Summary data={envelope} ranked={ranked} route={routeEnvelope} />
     </main>
   );
 }

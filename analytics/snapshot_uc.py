@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from analytics import uc3_closure, uc4_reroute
+from analytics import route_reliability, uc3_closure, uc4_reroute
 from lib.graph_queries import disabled_lane_keys_for_chokepoint, reroute_delta
 
 # The featured demo route (mirrors scripts/verify.py UC_DEMO_ORIGIN/DEST): USNYC->CNSHA
@@ -200,6 +200,12 @@ def snapshot_uc4(db: Any = None) -> dict[str, Any]:
         "baseline_hours": round(float(sum(baseline_legs)), 12),
         "reroute_hours": round(float(sum(reroute_legs)), 12),
         "delta": round(float(reroute_delta(baseline_legs, reroute_legs)), 12),
+        "baseline_reliability": route_reliability.route_reliability(
+            _path_legs(baseline_rows)
+        ),
+        "reroute_reliability": route_reliability.route_reliability(
+            _path_legs(reroute_rows)
+        ),
     }
 
 
