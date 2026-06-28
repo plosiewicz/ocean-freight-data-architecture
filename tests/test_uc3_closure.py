@@ -23,11 +23,15 @@ def _import_closure():
     return uc3_closure
 
 
-# Tiny in-memory network: 3 lanes, SUEZ closure should drop the two SUEZ lanes.
+# Tiny in-memory network under the XOR rule (REQ-14-3): each Asia<->US-East lane
+# transits EXACTLY ONE canal. USNYC->Far-East routes via SUEZ; USSAV->Far-East
+# routes via PANAMA; the trans-Pacific USLAX leg transits no curated canal here.
+# (The Europe lane to DEHAM would transit GIBRALTAR, omitted from this minimal
+# SUEZ-vs-PANAMA fixture.) Closing SUEZ drops exactly the SUEZ lane.
 _TRANSITS = {
-    "L_USNYC_DEHAM": "SUEZ",
     "L_USNYC_CNSHA": "SUEZ",
-    "L_USLAX_CNSHA": "PANAMA",
+    "L_USSAV_CNSHA": "PANAMA",
+    "L_USNYC_KRPUS": "SUEZ",
 }
 
 
@@ -35,8 +39,8 @@ def test_closure_excludes_transiting_lanes():
     """Closing SUEZ excludes exactly the lanes whose transits_chokepoint == SUEZ."""
     uc3 = _import_closure()
     closed = uc3.closed_lane_keys(_TRANSITS, chokepoint="SUEZ")
-    assert set(closed) == {"L_USNYC_DEHAM", "L_USNYC_CNSHA"}
-    assert "L_USLAX_CNSHA" not in closed
+    assert set(closed) == {"L_USNYC_CNSHA", "L_USNYC_KRPUS"}
+    assert "L_USSAV_CNSHA" not in closed
 
 
 def test_reachability_count_drops_under_closure():
@@ -94,7 +98,7 @@ def test_reframe_gibraltar_fragments_suez_does_not():
     uc3 = _import_closure()
     # Routes reachable from USNYC and the chokepoints each transits.
     routes = {
-        "USNYC__CNSHA": ["PANAMA", "SUEZ"],  # Far-East: reroutable
+        "USNYC__CNSHA": ["SUEZ"],            # Far-East via SUEZ (XOR rule): reroutable
         "USNYC__USLAX": [],                  # proforma leg (detour hop)
         "USLAX__CNSHA": [],                  # trans-Pacific detour
         "USNYC__DEHAM": ["GIBRALTAR"],       # Europe: ONLY path to DEHAM here

@@ -30,13 +30,15 @@ def _import():
 
 
 # A tiny weighted route network mirroring the real topology shape:
-#   USNYC -> CNSHA  direct, transits {SUEZ, PANAMA}, ~356h  (the disrupted lane)
+#   USNYC -> CNSHA  direct, transits {SUEZ} ONLY (XOR rule, REQ-14-3), ~356h  (the disrupted lane)
 #   USNYC -> USLAX  US<->US proforma leg, ~120h
 #   USLAX -> CNSHA  trans-Pacific, no curated canal, ~312h  (the detour second leg)
 # So baseline USNYC->CNSHA = 356h direct; with SUEZ disabled the direct lane is
 # excluded and the optimal path is USNYC->USLAX->CNSHA = 120 + 312 = 432h.
+# USNYC is the SUEZ-routed US-East port (A1), so a Suez closure still disables this
+# featured demo lane and forces the detour — and Panama closure would NOT touch it.
 _FIXTURE_ROUTES = {
-    "USNYC__CNSHA": {"hours": 356.0, "chokepoints": ["PANAMA", "SUEZ"]},
+    "USNYC__CNSHA": {"hours": 356.0, "chokepoints": ["SUEZ"]},
     "USNYC__USLAX": {"hours": 120.0, "chokepoints": []},
     "USLAX__CNSHA": {"hours": 312.0, "chokepoints": []},
     # A Europe leg that ONLY connects via Gibraltar in the fixture, so removing

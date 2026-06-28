@@ -82,9 +82,14 @@ def test_route_edge_carries_transited_chokepoints():
     # Europe<->US-East transits Gibraltar.
     deham = gl.build_route_edge("USNYC", "DEHAM")
     assert deham["chokepoints"] == ["GIBRALTAR"]
-    # Far-East<->US-East transits Suez OR Panama (rule order-insensitive -> sorted).
+    # Far-East<->US-East transits exactly ONE canal (Suez XOR Panama, REQ-14-3).
+    # USNYC is the SUEZ-routed US-East port; USSAV is the PANAMA-routed one.
     cnsha = gl.build_route_edge("USNYC", "CNSHA")
-    assert sorted(cnsha["chokepoints"]) == ["PANAMA", "SUEZ"]
+    assert cnsha["chokepoints"] == ["SUEZ"]
+    sav_cnsha = gl.build_route_edge("USSAV", "CNSHA")
+    assert sav_cnsha["chokepoints"] == ["PANAMA"]
+    # No Asia<->US-East lane returns BOTH canals (the artifact that was fixed).
+    assert not (("SUEZ" in cnsha["chokepoints"]) and ("PANAMA" in cnsha["chokepoints"]))
     # Trans-Pacific (Far-East<->US-West): no curated canal.
     lax_cnsha = gl.build_route_edge("USLAX", "CNSHA")
     assert lax_cnsha["chokepoints"] == []
