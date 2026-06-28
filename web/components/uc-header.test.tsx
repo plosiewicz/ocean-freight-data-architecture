@@ -41,3 +41,39 @@ describe("UcHeader provenance pill (APP-05 / D-02)", () => {
     expect(withoutHook).not.toContain("golden");
   });
 });
+
+// REQ-14-1 (review finding note 1): the "Why {store}: {workload}." rationale line was
+// flagged as redundant on the UC headers. It is removed; the "Answered by: {store}"
+// badge and the uc.summary text stay. These cases lock the removal in (regression
+// guard) and assert the badge + summary survive so they can't be dropped by accident.
+describe("UcHeader without the Why-store rationale line (REQ-14-1)", () => {
+  it("does NOT render the 'Why {store}: {workload}.' rationale line for UC1", () => {
+    const html = renderToStaticMarkup(<UcHeader id="uc1" servedBy="golden" />);
+    // The removed line read e.g. "Why BigQuery: OLAP / dimensional." — assert the
+    // "Why <store>:" fragment is gone (workload text overlaps nothing else here).
+    expect(html).not.toContain("Why BigQuery");
+    expect(html).not.toContain("OLAP / dimensional");
+  });
+
+  it("does NOT render the 'Why {store}: {workload}.' rationale line for UC2", () => {
+    const html = renderToStaticMarkup(<UcHeader id="uc2" servedBy="golden" />);
+    expect(html).not.toContain("Why BigQuery");
+    expect(html).not.toContain("OLAP / dimensional");
+  });
+
+  it("still renders the 'Answered by' store badge and uc.summary for UC1", () => {
+    const html = renderToStaticMarkup(<UcHeader id="uc1" servedBy="golden" />);
+    expect(html).toContain("Answered by: BigQuery");
+    expect(html).toContain(
+      "Which routes, carriers, and ports have the worst schedule reliability",
+    );
+  });
+
+  it("still renders the 'Answered by' store badge and uc.summary for UC2", () => {
+    const html = renderToStaticMarkup(<UcHeader id="uc2" servedBy="golden" />);
+    expect(html).toContain("Answered by: BigQuery");
+    expect(html).toContain(
+      "How congestion and dwell time at key ports trend over time",
+    );
+  });
+});

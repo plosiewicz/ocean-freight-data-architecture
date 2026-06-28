@@ -75,11 +75,10 @@ export function UcHeader({ id, servedBy }: UcHeaderProps) {
 
       <h1 className="mt-3 text-3xl font-semibold tracking-tight">{uc.title}</h1>
 
-      {/* Why-this-store rationale — APP-04. Workload classification from USE_CASES. */}
+      {/* UC summary. The "Why {store}: {workload}." rationale line (APP-04) was removed
+          per REQ-14-1 (final-presentation review finding note 1) as redundant against the
+          "Answered by: {store}" badge above. Source stays USE_CASES, never the golden store. */}
       <p className="mt-3 max-w-2xl text-sm leading-relaxed text-muted-foreground">
-        <span className="font-medium text-foreground">
-          Why {uc.store}: {uc.workload}.
-        </span>{" "}
         {uc.summary}
       </p>
     </header>
