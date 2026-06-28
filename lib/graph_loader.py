@@ -647,6 +647,32 @@ def load_graph(bucket: str = BUCKET) -> dict[str, int]:
     summary["operates"] = upsert_rows(db, "operates", operates, edge=True)
     summary["transits_chokepoint"] = upsert_rows(db, "transits_chokepoint", transits, edge=True)
 
+    # --- Stale-edge cleanup: transits_chokepoint orphans under the XOR rule ---- #
+    # The idempotent UPSERT (above) inserts/updates the freshly-built edges but does
+    # NOT delete edges whose _key the new rule no longer emits (RESEARCH Assumption
+    # A2 / Open Question 2). Under the Suez-XOR-Panama change (REQ-14-3) every
+    # Asia<->US-East lane that previously transited BOTH canals now transits only
+    # one, so the complementary ``{lane}__{canal}`` edges from a prior both-canals
+    # load are orphans that would keep a closed canal disabling lanes it no longer
+    # serves. Build the keep-set from the SAME list just UPSERTed and REMOVE the
+    # complement. This is reversible (REMOVE, not a collection drop) and idempotent
+    # (a clean store removes nothing). ``route`` edges need no cleanup: they UPSERT
+    # by the same _key so the stale ``chokepoints`` array is overwritten in place.
+    # AQL uses BIND variables ONLY — never f-string interpolation (threat T-06-06 /
+    # ASVS V5), mirroring ``upsert_rows`` discipline. Counts only, never secrets
+    # (threat T-06-01).
+    keep_keys = [t["_key"] for t in transits]
+    cursor = db.aql.execute(
+        "FOR e IN @@collection "
+        "FILTER e._key NOT IN @keep "
+        "REMOVE e IN @@collection "
+        "RETURN OLD._key",
+        bind_vars={"@collection": "transits_chokepoint", "keep": keep_keys},
+    )
+    removed = len(list(cursor))
+    summary["transits_chokepoint_removed"] = removed
+    print(f"[INFO] removed {removed} stale transits_chokepoint edges (XOR cleanup)")
+
     for coll, n in summary.items():
         print(f"[INFO] upserted {n} into {coll}")
     print(f"[OK] load_graph complete: {summary}")
