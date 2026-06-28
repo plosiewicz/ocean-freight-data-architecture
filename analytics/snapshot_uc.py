@@ -56,6 +56,47 @@ def _total_reachable(rows: list[Any]) -> int:
     return sum(int(r.get("reachable_count", 0) or 0) for r in rows)
 
 
+# searoute AVOID set that forces a polyline THROUGH the named chokepoint, so a lane
+# disabled by closing that chokepoint draws as a line that visibly transits it
+# (geometry is cosmetic only). SUEZ -> avoid Panama; PANAMA -> avoid Suez. For
+# GIBRALTAR (and any other) the natural shortest sea-route already takes the Med
+# approach, so no restriction is needed.
+_CHOKEPOINT_RESTRICT: dict[str, tuple[str, ...]] = {
+    "SUEZ": ("panama",),
+    "PANAMA": ("suez",),
+}
+
+
+def _disabled_lane_paths(
+    disabled_lanes: list[str], chokepoint: str
+) -> list[dict[str, Any]]:
+    """Bake a per-lane sea-route polyline for each disabled ``A__B`` lane (REQ-14-2/4).
+
+    Splits each ``A__B`` lane key to its endpoint port centroids and routes a
+    cosmetic searoute polyline THROUGH the closed ``chokepoint`` (via the per-
+    chokepoint restrict). Coords come pre-rounded/normalized from
+    ``searoute_geometry.polyline_for``; the analytic counts/deltas are untouched.
+    Order-stable (follows ``disabled_lanes`` order).
+    """
+    from lib.searoute_geometry import centroid_for, polyline_for
+
+    restrict = _CHOKEPOINT_RESTRICT.get(chokepoint, ())
+    paths: list[dict[str, Any]] = []
+    for lk in disabled_lanes:
+        a, _, b = lk.partition("__")
+        if not a or not b:
+            continue
+        paths.append(
+            {
+                "lane_key": lk,
+                "waypoints": polyline_for(
+                    centroid_for(a), centroid_for(b), restrict=restrict
+                ),
+            }
+        )
+    return paths
+
+
 def snapshot_uc3(db: Any = None) -> dict[str, Any]:
     """Assemble the credential-free UC3 snapshot dict (transit-share + reroute + closure).
 
@@ -122,6 +163,7 @@ def snapshot_uc3(db: Any = None) -> dict[str, Any]:
     for cp in (str(r["chokepoint"]) for r in transit_share):
         cp_rows = uc3_closure.run_closure(cp, db=db)
         cp_impact = uc3_closure.run_reroute_impact(cp, DEMO_ORIGIN, DEMO_DEST, db=db)
+        disabled_lanes = [str(x) for x in cp_impact["disabled_lanes"]]
         closure_by_chokepoint.append(
             {
                 "chokepoint": cp,
@@ -136,7 +178,12 @@ def snapshot_uc3(db: Any = None) -> dict[str, Any]:
                     float(sum(cp_impact["reroute_legs"])), 12
                 ),
                 "reroute_delta_hours": round(float(cp_impact["delta"]), 12),
-                "disabled_lane_count": int(len(cp_impact["disabled_lanes"])),
+                "disabled_lane_count": int(len(disabled_lanes)),
+                # REQ-14-2: the actual disabled-lane KEYS (not just the count) so the
+                # map can highlight the affected lanes when a chokepoint is selected.
+                "disabled_lanes": disabled_lanes,
+                # REQ-14-4: baked cosmetic sea-route polyline per disabled lane.
+                "disabled_lane_paths": _disabled_lane_paths(disabled_lanes, cp),
             }
         )
     closure_by_chokepoint.sort(key=lambda e: e["chokepoint"])
