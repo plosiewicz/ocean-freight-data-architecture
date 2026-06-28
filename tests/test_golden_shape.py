@@ -164,8 +164,8 @@ def test_uc4_each_scenario_has_required_keys(patched_uc4):
     body = sg.snapshot_uc4()
     closed_seen = set()
     for sc in body["scenarios"]:
-        for k in ("id", "label", "closed", "origin", "dest",
-                  "baseline_path", "reroute_path", "delta"):
+        for k in ("id", "label", "closed", "origin", "dest", "fragmenting",
+                  "reroute_available", "baseline_path", "reroute_path", "delta"):
             assert k in sc, f"scenario missing {k}"
         assert sc["closed"] in ("SUEZ", "PANAMA", "GIBRALTAR")
         closed_seen.add(sc["closed"])
@@ -173,16 +173,37 @@ def test_uc4_each_scenario_has_required_keys(patched_uc4):
 
 
 def test_uc4_every_hop_carries_nonempty_waypoints(patched_uc4):
+    """Baseline hops always carry geometry; reroute hops do when a reroute exists."""
     sg = _import()
     body = sg.snapshot_uc4()
     for sc in body["scenarios"]:
-        for path_key in ("baseline_path", "reroute_path"):
-            assert sc[path_key], f"{path_key} empty"
-            for hop in sc[path_key]:
+        # baseline path is always populated with non-empty per-hop geometry.
+        assert sc["baseline_path"], "baseline_path empty"
+        for hop in sc["baseline_path"]:
+            wp = hop.get("waypoints")
+            assert isinstance(wp, list) and len(wp) > 0
+            for pt in wp:
+                assert isinstance(pt, list) and len(pt) == 2
+        # a NON-fragmenting scenario reroutes -> reroute hops carry geometry too.
+        if sc["reroute_available"]:
+            assert sc["reroute_path"], "reroute_path empty despite reroute_available"
+            for hop in sc["reroute_path"]:
                 wp = hop.get("waypoints")
                 assert isinstance(wp, list) and len(wp) > 0
-                for pt in wp:
-                    assert isinstance(pt, list) and len(pt) == 2
+
+
+def test_uc4_gibraltar_is_fragmenting_with_cosmetic_cape_geometry(patched_uc4):
+    """GIBRALTAR fragments (D-12): empty model reroute, delta 0, but Cape geometry baked."""
+    sg = _import()
+    gib = next(sc for sc in sg.snapshot_uc4()["scenarios"] if sc["closed"] == "GIBRALTAR")
+    assert gib["fragmenting"] is True
+    assert gib["reroute_available"] is False
+    assert gib["delta"] == 0
+    assert gib["reroute_path"] == []
+    # The cosmetic Cape-of-Good-Hope baseline polyline is still present for the map.
+    assert gib["baseline_path"]
+    for hop in gib["baseline_path"]:
+        assert isinstance(hop.get("waypoints"), list) and len(hop["waypoints"]) > 0
 
 
 def test_uc4_suez_and_panama_reroute_geometry_distinct(patched_uc4):
@@ -204,10 +225,12 @@ def test_uc4_legacy_top_level_mirrors_scenario_zero(patched_uc4):
     assert body["delta"] == s0["delta"]
 
 
-def test_uc4_every_scenario_delta_strictly_positive(patched_uc4):
-    """Offline non-degeneracy: EACH curated scenario reroutes (delta > 0)."""
+def test_uc4_nonfragmenting_scenarios_delta_strictly_positive(patched_uc4):
+    """Offline non-degeneracy: every NON-fragmenting curated scenario reroutes (delta>0)."""
     sg = _import()
-    for sc in sg.snapshot_uc4()["scenarios"]:
+    nonfrag = [sc for sc in sg.snapshot_uc4()["scenarios"] if not sc["fragmenting"]]
+    assert {sc["closed"] for sc in nonfrag} >= {"SUEZ", "PANAMA"}
+    for sc in nonfrag:
         assert sc["delta"] > 0, f"{sc['closed']} scenario is degenerate (delta<=0)"
 
 

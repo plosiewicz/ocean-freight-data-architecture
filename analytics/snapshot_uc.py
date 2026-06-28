@@ -152,54 +152,174 @@ def snapshot_uc3(db: Any = None) -> dict[str, Any]:
     }
 
 
-def snapshot_uc4(db: Any = None) -> dict[str, Any]:
-    """Assemble the credential-free UC4 reroute snapshot dict (baseline vs reroute path).
+# --------------------------------------------------------------------------- #
+# Curated UC4 disruption scenarios (REQ-14-6 / DECISION 3). Each closes ONE   #
+# named canal (REQ-14-5) on a route that chokepoint actually serves.          #
+#   * SUEZ      — the featured Asia->US-East pair USNYC->CNSHA (SUEZ-routed A1)#
+#                 — non-fragmenting: a longer Pacific detour exists (delta>0). #
+#   * PANAMA    — Europe->US-West DEHAM->USLAX (PANAMA-routed via the canal)   #
+#                 — non-fragmenting: a longer detour exists (delta>0).         #
+#   * GIBRALTAR — Europe->US-East DEHAM->USNYC — FRAGMENTING (PROJECT D-12):   #
+#                 GIBRALTAR is assigned to EVERY Europe<->US lane, so closing  #
+#                 it disconnects Europe entirely (no model reroute; the locked #
+#                 genuine-unreachability 29->11 story). Its scenario tells the #
+#                 FRAGMENTATION story: empty model reroute (delta == 0,        #
+#                 reroute_available False) but a COSMETIC Cape-of-Good-Hope    #
+#                 baseline polyline so the map still has geometry to draw.     #
+# `restrict` is the searoute AVOID set that FORCES the scenario's baseline     #
+# routing geometry (cosmetic only): a SUEZ-routed leg avoids Panama, a         #
+# PANAMA-routed leg avoids Suez, the GIBRALTAR case forces the Cape (avoid     #
+# both) since the Med approach it would otherwise take is what is closed.      #
+# --------------------------------------------------------------------------- #
+_UC4_SCENARIOS: tuple[dict[str, Any], ...] = (
+    {"id": "suez", "label": "Suez Canal closed (Asia ↔ US-East)",
+     "closed": "SUEZ", "origin": "USNYC", "dest": "CNSHA", "restrict": "panama",
+     "fragmenting": False},
+    {"id": "panama", "label": "Panama Canal closed (Europe ↔ US-West)",
+     "closed": "PANAMA", "origin": "DEHAM", "dest": "USLAX", "restrict": "suez",
+     "fragmenting": False},
+    {"id": "gibraltar", "label": "Strait of Gibraltar closed (Europe ↔ US-East)",
+     "closed": "GIBRALTAR", "origin": "DEHAM", "dest": "USNYC", "restrict": "panama,suez",
+     "fragmenting": True},
+)
 
-    Delegates to ``analytics.uc4_reroute.run_path`` (bind vars only): the baseline
-    USNYC->CNSHA weighted SHORTEST_PATH, then the reroute with the SUEZ-transiting
-    lanes disabled, plus :func:`reroute_delta`. Returns ONLY counts / floats /
-    strings / lists — no client or credential object.
+
+def _port_id(code: str) -> str:
+    return code if "/" in code else f"ports/{code}"
+
+
+def _bare_code(port_id: str) -> str:
+    return port_id.split("/", 1)[-1]
+
+
+def _waypoints_for_path(rows: list[Any], restrict: tuple[str, ...]) -> list[list[float]]:
+    """Per-hop searoute polylines for a path's hops (cosmetic geometry, REQ-14-4).
+
+    Each hop carries the [lon,lat] polyline of an ADJACENT leg so EVERY hop
+    (including the origin hop 0) has a non-empty ``waypoints`` list: hop ``i>=1``
+    gets the leg arriving at it (port[i-1]->port[i]); hop 0 gets the leg departing
+    it (port[0]->port[1]). A single-hop path gets a degenerate point. Coords come
+    pre-rounded/normalized from ``searoute_geometry.polyline_for`` — the analytic
+    weights are untouched (geometry is cosmetic).
+    """
+    from lib.searoute_geometry import centroid_for, polyline_for
+
+    codes = [_bare_code(str(r.get("port"))) for r in rows]
+    per_hop: list[list[list[float]]] = []
+    for i in range(len(codes)):
+        if len(codes) == 1:
+            per_hop.append([centroid_for(codes[0])])
+            continue
+        a, b = (codes[i - 1], codes[i]) if i >= 1 else (codes[0], codes[1])
+        per_hop.append(polyline_for(centroid_for(a), centroid_for(b), restrict=restrict))
+    return per_hop
+
+
+def _path_legs(rows: list[Any], restrict: tuple[str, ...] = ()) -> list[dict[str, Any]]:
+    """Coerce path rows to plain dicts and attach per-hop ``waypoints`` (REQ-14-4)."""
+    waypoints = _waypoints_for_path(rows, restrict) if rows else []
+    legs: list[dict[str, Any]] = []
+    for idx, r in enumerate(rows):
+        leg: dict[str, Any] = {}
+        for k, v in r.items():
+            if isinstance(v, float):
+                leg[k] = round(float(v), 12)
+            elif isinstance(v, (int, str)) or v is None:
+                leg[k] = v
+            else:
+                leg[k] = str(v)
+        leg["waypoints"] = waypoints[idx]
+        legs.append(leg)
+    return legs
+
+
+def _build_uc4_scenario(spec: dict[str, Any], db: Any = None) -> dict[str, Any]:
+    """Build one curated UC4 scenario dict (baseline vs reroute + baked geometry).
+
+    Derives the disabled lane set from the scenario's CLOSED chokepoint via the
+    Plan-03 XOR rule (distinct per canal), runs baseline/reroute SHORTEST_PATH, and
+    attaches per-leg ``waypoints``. The reroute ``delta`` stays on the haversine/18kn
+    MODEL weights (``leg_hours``) — searoute distances are NEVER adopted.
+
+    A ``fragmenting`` scenario (GIBRALTAR, PROJECT D-12) has NO model reroute — closing
+    it disconnects the route. Such a scenario carries an empty ``reroute_path``,
+    ``delta == 0``, ``reroute_available == False``, but keeps the COSMETIC Cape-of-Good-
+    Hope baseline polyline so the map still has geometry to draw. Non-fragmenting
+    scenarios (SUEZ/PANAMA) reroute around the closure with a strict ``delta > 0``.
     """
     from data_gen.network import LANES, US_US_LANES
     from lib.graph_loader import chokepoints_for_lane
 
-    origin_id = DEMO_ORIGIN if "/" in DEMO_ORIGIN else f"ports/{DEMO_ORIGIN}"
-    dest_id = DEMO_DEST if "/" in DEMO_DEST else f"ports/{DEMO_DEST}"
+    origin_id = _port_id(spec["origin"])
+    dest_id = _port_id(spec["dest"])
+    restrict = tuple(p for p in spec["restrict"].split(",") if p)
+    fragmenting = bool(spec.get("fragmenting", False))
     disabled = disabled_lane_keys_for_chokepoint(
-        tuple(LANES) + tuple(US_US_LANES),
-        chokepoints_for_lane,
-        REROUTE_IMPACT_CHOKEPOINT,
+        tuple(LANES) + tuple(US_US_LANES), chokepoints_for_lane, spec["closed"]
     )
 
     baseline_rows = uc4_reroute.run_path(origin_id, dest_id, db=db)
-    reroute_rows = uc4_reroute.run_path(origin_id, dest_id, disabled_lanes=disabled, db=db)
     baseline_legs = uc4_reroute.leg_hours(baseline_rows)
-    reroute_legs = uc4_reroute.leg_hours(reroute_rows)
 
-    def _path_legs(rows: list[Any]) -> list[dict[str, Any]]:
-        legs: list[dict[str, Any]] = []
-        for r in rows:
-            leg: dict[str, Any] = {}
-            for k, v in r.items():
-                if isinstance(v, float):
-                    leg[k] = round(float(v), 12)
-                elif isinstance(v, (int, str)) or v is None:
-                    leg[k] = v
-                else:
-                    leg[k] = str(v)
-            legs.append(leg)
-        return legs
+    if fragmenting:
+        # No model reroute exists — Gibraltar disconnects Europe (D-12). Report
+        # fragmentation, not a fabricated detour: empty reroute, delta 0. The
+        # cosmetic Cape baseline geometry still ships for the map.
+        reroute_rows: list[Any] = []
+        reroute_legs: list[float] = []
+        delta = 0.0
+        reroute_available = False
+    else:
+        reroute_rows = uc4_reroute.run_path(
+            origin_id, dest_id, disabled_lanes=disabled, db=db
+        )
+        reroute_legs = uc4_reroute.leg_hours(reroute_rows)
+        delta = float(reroute_delta(baseline_legs, reroute_legs))
+        reroute_available = bool(reroute_rows)
 
     return {
-        "use_case": "UC4",
+        "id": str(spec["id"]),
+        "label": str(spec["label"]),
+        "closed": str(spec["closed"]),
         "origin": origin_id,
         "dest": dest_id,
+        "fragmenting": fragmenting,
+        "reroute_available": reroute_available,
         "disabled_lanes": [str(x) for x in disabled],
-        "baseline_path": _path_legs(baseline_rows),
-        "reroute_path": _path_legs(reroute_rows),
+        "baseline_path": _path_legs(baseline_rows, restrict),
+        "reroute_path": _path_legs(reroute_rows, restrict),
         "baseline_hours": round(float(sum(baseline_legs)), 12),
         "reroute_hours": round(float(sum(reroute_legs)), 12),
-        "delta": round(float(reroute_delta(baseline_legs, reroute_legs)), 12),
+        "delta": round(float(delta), 12),
+    }
+
+
+def snapshot_uc4(db: Any = None) -> dict[str, Any]:
+    """Assemble the credential-free UC4 reroute snapshot dict (curated scenarios[]).
+
+    Builds a curated ``scenarios`` list (REQ-14-6) — at least Suez/Panama/Gibraltar,
+    each closing a NAMED chokepoint (REQ-14-5) with per-leg baked sea-route
+    ``waypoints`` (REQ-14-4) and a distinct disabled-lane set (Plan-03 XOR rule). The
+    legacy top-level ``baseline_path``/``reroute_path``/``delta``/etc. MIRROR
+    ``scenarios[0]`` verbatim so ``uc4-summary.tsx`` + ``test_uc4_reroute.py`` stay
+    unchanged (Assumption A4). Deltas stay on the haversine/18kn MODEL weights; geometry
+    is cosmetic. Returns ONLY counts / floats / strings / lists — no credential object.
+    """
+    scenarios = [_build_uc4_scenario(spec, db=db) for spec in _UC4_SCENARIOS]
+    first = scenarios[0]
+    return {
+        "use_case": "UC4",
+        # Legacy top-level mirror of scenarios[0] (A4 — unchanged downstream contract).
+        "origin": first["origin"],
+        "dest": first["dest"],
+        "disabled_lanes": list(first["disabled_lanes"]),
+        "baseline_path": first["baseline_path"],
+        "reroute_path": first["reroute_path"],
+        "baseline_hours": first["baseline_hours"],
+        "reroute_hours": first["reroute_hours"],
+        "delta": first["delta"],
+        # REQ-14-6 curated scenarios with named closed chokepoint + baked geometry.
+        "scenarios": scenarios,
     }
 
 
