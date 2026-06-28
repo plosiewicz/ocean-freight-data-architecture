@@ -211,6 +211,14 @@ def _freeze_uc3() -> tuple[int, dict | None]:
         _fail("uc3: GIBRALTAR closure did NOT reduce reachability",
               f"open={open_total} closed={closed_total} (expected strict decrease)")
         return EXIT_EMPTY, None
+    # LIGHT shape guard (REQ-14-2): every closure_by_chokepoint entry must carry the
+    # disabled_lanes KEY list (the map's per-chokepoint highlight source). Additive —
+    # no magnitude pin, no count assertion (a documented-zero chokepoint has []).
+    for entry in body.get("closure_by_chokepoint") or []:
+        if "disabled_lanes" not in entry:
+            _fail("uc3: closure_by_chokepoint entry missing disabled_lanes keys",
+                  f"chokepoint={entry.get('chokepoint')!r} (re-run the enriched snapshot_uc3)")
+            return EXIT_EMPTY, None
     return EXIT_OK, body
 
 
@@ -224,10 +232,29 @@ def _freeze_uc4() -> tuple[int, dict | None]:
     if not body.get("reroute_path") or len(body["reroute_path"]) <= 1:
         _fail("uc4: reroute path empty/degenerate", "SUEZ disabled-lane filter is a no-op (hollow defect)")
         return EXIT_EMPTY, None
+    # Direction-only non-degeneracy on the LEGACY top-level mirror (= scenarios[0],
+    # the SUEZ featured pair) — never pin the magnitude.
     if body.get("reroute_path") == body.get("baseline_path") or not (float(body.get("delta", 0)) > 0):
         _fail("uc4: reroute delta not strictly positive",
               f"delta={body.get('delta')} (expected > 0)")
         return EXIT_EMPTY, None
+    # LIGHT shape guard for the curated scenarios[] (REQ-14-6) — mirrors the
+    # baseline_legs EXIT_EMPTY style. Refuse to overwrite if scenarios are missing or
+    # any NON-FRAGMENTING scenario fails to reroute (delta <= 0). A FRAGMENTING
+    # scenario (GIBRALTAR, PROJECT D-12) legitimately has delta == 0 / no reroute — it
+    # tells the genuine-unreachability story, not a reroute story.
+    scenarios = body.get("scenarios")
+    if not scenarios:
+        _fail("uc4: scenarios[] missing/empty",
+              "snapshot_uc4 must emit >=3 curated scenarios (REQ-14-6)")
+        return EXIT_EMPTY, None
+    for sc in scenarios:
+        if sc.get("fragmenting"):
+            continue  # Gibraltar fragments — delta 0 / empty reroute is expected.
+        if not (float(sc.get("delta", 0)) > 0):
+            _fail(f"uc4: scenario {sc.get('id')!r} reroute delta not strictly positive",
+                  f"delta={sc.get('delta')} (expected > 0 for a non-fragmenting scenario)")
+            return EXIT_EMPTY, None
     return EXIT_OK, body
 
 
