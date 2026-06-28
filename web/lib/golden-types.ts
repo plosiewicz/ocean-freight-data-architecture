@@ -84,6 +84,23 @@ export interface Uc3RerouteImpactSuez {
 }
 
 /**
+ * A baked sea-route polyline point, in deck.gl/golden [lon, lat] order (REQ-14-4).
+ * These coords are PRE-COMPUTED by analytics/lib/searoute_geometry.polyline_for and
+ * baked into the golden — they are passed through verbatim, never re-derived at
+ * runtime (CSP: no client-side geometry computation, no external searoute call).
+ */
+export type Uc4Waypoint = [number, number];
+
+/**
+ * One disabled lane's baked polyline (REQ-14-2/4): the lane key (e.g. "USNYC__CNSHA")
+ * plus the per-lane sea-route waypoints routed THROUGH the closed chokepoint.
+ */
+export interface Uc3DisabledLanePath {
+  lane_key: string;
+  waypoints: Uc4Waypoint[];
+}
+
+/**
  * One per-chokepoint closure + reroute-impact entry (the 7-chokepoint generalization
  * of closure_gibraltar + reroute_impact_suez). Carries ONLY counts/floats/strings —
  * disabled_lane_COUNT, never the lane list or any credential material (T-lwx-02).
@@ -98,6 +115,12 @@ export interface Uc3ClosureEntry {
   reroute_reroute_hours: number;
   reroute_delta_hours: number;
   disabled_lane_count: number;
+  // REQ-14-2 (additive): the actual disabled-lane KEYS for the closed chokepoint, so
+  // the map can highlight the affected lanes (not just the count). Pure geometry/keys —
+  // no credential material (T-14-09).
+  disabled_lanes: string[];
+  // REQ-14-4 (additive): one baked cosmetic sea-route polyline per disabled lane.
+  disabled_lane_paths: Uc3DisabledLanePath[];
 }
 
 export interface Uc3Envelope {
@@ -117,6 +140,37 @@ export interface Uc3Envelope {
 export interface Uc4PathHop {
   port: string;
   leg_hours: number;
+  // REQ-14-4 (additive): the baked per-hop sea-route polyline ([lon,lat] points) for
+  // the leg ARRIVING at this hop. Optional so legacy hop-only data stays valid; when
+  // present it is passed through verbatim (CSP: never re-derived at runtime).
+  waypoints?: Uc4Waypoint[];
+}
+
+/**
+ * One curated UC4 disruption scenario (REQ-14-6 / DECISION 3): closes ONE named
+ * chokepoint and carries its baseline-vs-reroute paths with per-hop baked waypoints.
+ *
+ * Fragmentation-aware (PROJECT D-12, user-approved Option A): a `fragmenting` scenario
+ * (GIBRALTAR) has NO model reroute — `reroute_available: false`, empty `reroute_path`,
+ * `delta: 0`, but keeps cosmetic baseline geometry to render. Non-fragmenting scenarios
+ * (SUEZ/PANAMA) carry a strict positive reroute `delta`. The scenario selector + label
+ * must handle BOTH: render the `closed` label + baseline + geometry for a scenario with
+ * no positive reroute, never assuming a reroute path exists.
+ */
+export interface Uc4Scenario {
+  id: string;
+  label: string;
+  closed: string;
+  origin: string;
+  dest: string;
+  fragmenting: boolean;
+  reroute_available: boolean;
+  disabled_lanes: string[];
+  baseline_path: Uc4PathHop[];
+  reroute_path: Uc4PathHop[];
+  baseline_hours: number;
+  reroute_hours: number;
+  delta: number;
 }
 
 export interface Uc4Envelope {
@@ -130,6 +184,10 @@ export interface Uc4Envelope {
   dest: string;
   frozen_at_iso: string;
   use_case: string;
+  // REQ-14-6 (additive): curated scenarios behind the selector. Each closes a named
+  // chokepoint with baked geometry; the legacy top-level fields above MIRROR
+  // scenarios[0] verbatim (Assumption A4 — legacy downstream contract unchanged).
+  scenarios?: Uc4Scenario[];
   // NOTE: intentionally NO `store` field — UC4 golden has none.
 }
 
@@ -171,10 +229,23 @@ export interface Uc3PortEnriched {
   lon: number;
 }
 
-/** A UC4 path hop enriched with resolved coords. */
+/** A UC4 path hop enriched with resolved coords (carries optional baked waypoints). */
 export type Uc4PathHopEnriched = Uc4PathHop & {
   lat: number;
   lon: number;
+};
+
+/**
+ * A curated UC4 scenario enriched with coord-bearing hops (REQ-14-6). Mirrors the
+ * envelope-level enrichment: both path arrays replaced by the coord-bearing hop
+ * variant. `waypoints` pass through verbatim on each hop (already [lon,lat]).
+ */
+export type Uc4ScenarioEnriched = Omit<
+  Uc4Scenario,
+  "baseline_path" | "reroute_path"
+> & {
+  baseline_path: Uc4PathHopEnriched[];
+  reroute_path: Uc4PathHopEnriched[];
 };
 
 /**
@@ -191,9 +262,15 @@ export type Uc3Enriched = Omit<Uc3Envelope, "transit_share"> & {
  * The enriched UC4 envelope: base envelope with both path arrays replaced by the
  * coord-bearing hop variant. Carries `served_by` (added by serve()).
  */
-export type Uc4Enriched = Omit<Uc4Envelope, "baseline_path" | "reroute_path"> & {
+export type Uc4Enriched = Omit<
+  Uc4Envelope,
+  "baseline_path" | "reroute_path" | "scenarios"
+> & {
   baseline_path: Uc4PathHopEnriched[];
   reroute_path: Uc4PathHopEnriched[];
+  // REQ-14-6: the curated scenarios with coord-enriched hops. Optional so a legacy
+  // (pre-14-04) envelope without scenarios still type-checks.
+  scenarios?: Uc4ScenarioEnriched[];
 };
 
 /** Map a uc id to its envelope type for the generic serve() call site. */

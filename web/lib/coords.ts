@@ -149,11 +149,20 @@ function deriveUc3PortKeys(env: Uc3Envelope): string[] {
   const keys = new Set<string>();
   keys.add(normKey(env.origin));
   keys.add(normKey(env.dest));
-  for (const pair of env.reroute_impact_suez.disabled_lanes) {
-    for (const half of pair.split("__")) {
-      const k = normKey(half);
-      if (k) keys.add(k);
+  const addLaneEndpoints = (laneKeys: string[]) => {
+    for (const pair of laneKeys) {
+      for (const half of pair.split("__")) {
+        const k = normKey(half);
+        if (k) keys.add(k);
+      }
     }
+  };
+  addLaneEndpoints(env.reroute_impact_suez.disabled_lanes);
+  // REQ-14-2 (additive): also pull endpoint ports from each chokepoint's per-closure
+  // disabled_lanes (the 7-chokepoint generalization). Optional-safe: a legacy envelope
+  // whose closure entries predate disabled_lanes contributes nothing here.
+  for (const entry of env.closure_by_chokepoint ?? []) {
+    if (entry.disabled_lanes) addLaneEndpoints(entry.disabled_lanes);
   }
   return [...keys];
 }
@@ -229,10 +238,25 @@ export async function enrichWithCoords(
     return out;
   };
 
+  // REQ-14-6: enrich each curated scenario's hops the same way (coord-bearing hops; the
+  // baked per-hop `waypoints` ride through verbatim via the `...hop` spread inside
+  // enrichHops — they are already [lon,lat] geometry, no coord lookup). Endpoint ports
+  // resolve via the same single coordFor bridge. Optional-safe: a legacy envelope
+  // without scenarios yields `undefined` (the enriched type keeps scenarios optional).
+  // Strip the unenriched `scenarios` off the base spread so the `...rest` carries only
+  // the legacy top-level fields; we re-attach the COORD-ENRICHED scenarios below.
+  const { scenarios: rawScenarios, ...rest } = env;
+  const scenarios = rawScenarios?.map((s) => ({
+    ...s,
+    baseline_path: enrichHops(s.baseline_path),
+    reroute_path: enrichHops(s.reroute_path),
+  }));
+
   const enriched: Uc4Enriched = {
-    ...env,
+    ...rest,
     baseline_path: enrichHops(env.baseline_path),
     reroute_path: enrichHops(env.reroute_path),
+    ...(scenarios ? { scenarios } : {}),
   };
   return enriched;
 }
