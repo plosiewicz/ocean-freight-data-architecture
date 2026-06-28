@@ -1,8 +1,14 @@
 # Final Presentation & Demo — Slide Source (Grilled Cheesin)
 
-> **Manual step:** this file is the repo-side source of truth. Paste each **Slide content** block
-> into the *Final* section of the single shared Google Slides deck — **do not create a new deck**
-> (rubric rule). The **Say / defense** notes are speaker notes / Q&A prep.
+> **Built deck:** a ready-to-present PowerPoint of these slides is at
+> [`final-presentation.pptx`](final-presentation.pptx) (11 slides, branded, with the **Say / defense**
+> notes baked into each slide's speaker-notes pane). Regenerate it with
+> `python docs/deck/build_pptx.py` (needs `python-pptx`).
+> **Import into the single shared Google Slides deck** via *File → Import slides → Upload →
+> `final-presentation.pptx`* — pick the slides into the existing deck; **do not create a new deck**.
+>
+> **Manual step:** this Markdown file is the repo-side source of truth. The **Say / defense**
+> notes are speaker notes / Q&A prep.
 >
 > **What changed in the brief** (per `docs/Project plan.pdf` — the latest "Project plan (3).pdf"):
 > 1. Recap is now brief — the audience already knows the domain/schema.
