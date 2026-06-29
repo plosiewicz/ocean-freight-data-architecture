@@ -5,7 +5,12 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import type { Uc4Envelope, Uc4PathHop } from "@/lib/golden-types";
+import type {
+  Uc4Envelope,
+  Uc4PathHop,
+  Uc4ReliabilitySidecar,
+  Uc4RouteReliability,
+} from "@/lib/golden-types";
 
 // Render-only Server Component for /uc4 (Disruption rerouting, ArangoDB / graph).
 // Renders the baseline vs reroute path hops (port + per-leg hours) and surfaces the
@@ -62,7 +67,40 @@ function PathColumn({
   );
 }
 
-export function Uc4Summary({ data }: { data: Uc4Envelope }) {
+// One reliability table row, read entirely from the route-level aggregate prop
+// (never hardcoded). tabular-nums + .toFixed(2) match the PathColumn styling.
+function ReliabilityRow({
+  label,
+  route,
+  emphasis,
+}: {
+  label: string;
+  route: Uc4RouteReliability;
+  emphasis?: boolean;
+}) {
+  const numClass = emphasis
+    ? "px-3 py-2 text-right tabular-nums font-semibold text-destructive"
+    : "px-3 py-2 text-right tabular-nums text-foreground";
+  return (
+    <tr className="border-b last:border-0">
+      <th scope="row" className="px-3 py-2 text-left font-medium">
+        {label}
+      </th>
+      <td className={numClass}>{route.expected_delay_hours.toFixed(2)}</td>
+      <td className={numClass}>{route.on_time_pct.toFixed(2)}</td>
+      <td className={numClass}>{route.delay_risk_pct.toFixed(2)}</td>
+      <td className={numClass}>{route.connectivity_score.toFixed(2)}</td>
+    </tr>
+  );
+}
+
+export function Uc4Summary({
+  data,
+  reliability,
+}: {
+  data: Uc4Envelope;
+  reliability?: Uc4ReliabilitySidecar | null;
+}) {
   const {
     baseline_path,
     reroute_path,
@@ -121,6 +159,56 @@ export function Uc4Summary({ data }: { data: Uc4Envelope }) {
           />
         </CardContent>
       </Card>
+
+      {/* Route-reliability aggregates derived from REAL World Bank LPI / UNCTAD LSCI
+          priors. Rendered only when the sidecar is present (null-safe — a sidecar-less
+          deploy leaves the rest of the page intact). All cells read from the prop. */}
+      {reliability && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Route reliability: baseline vs reroute</CardTitle>
+            <CardDescription>
+              Derived from real World Bank LPI / UNCTAD LSCI reference-data priors
+              (reference-data vintage, not real-time): expected delay, on-time and
+              delay-risk probability, and weakest-link connectivity per route.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <table className="w-full border-collapse text-sm">
+              <thead>
+                <tr className="border-b text-xs uppercase tracking-wide text-muted-foreground">
+                  <th scope="col" className="px-3 py-2 text-left font-medium">
+                    Route
+                  </th>
+                  <th scope="col" className="px-3 py-2 text-right font-medium">
+                    Expected delay (h)
+                  </th>
+                  <th scope="col" className="px-3 py-2 text-right font-medium">
+                    On-time %
+                  </th>
+                  <th scope="col" className="px-3 py-2 text-right font-medium">
+                    Delay-risk %
+                  </th>
+                  <th scope="col" className="px-3 py-2 text-right font-medium">
+                    Connectivity
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <ReliabilityRow
+                  label="Baseline"
+                  route={reliability.baseline_reliability}
+                />
+                <ReliabilityRow
+                  label="Reroute"
+                  route={reliability.reroute_reliability}
+                  emphasis
+                />
+              </tbody>
+            </table>
+          </CardContent>
+        </Card>
+      )}
     </section>
   );
 }

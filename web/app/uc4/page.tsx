@@ -4,6 +4,7 @@ import { Uc4Summary } from "@/components/uc4-summary";
 import { hasLiveCreds, uc4LiveFetcher } from "@/lib/arango";
 import type { ServedBy, Uc4Enriched } from "@/lib/golden-types";
 import { cachedLiveFetcher } from "@/lib/page-fetcher";
+import { readUc4Reliability } from "@/lib/reliability";
 import { serve } from "@/lib/serve";
 
 // UC4 — Disruption rerouting (ArangoDB / graph). Async Server Component:
@@ -31,11 +32,16 @@ export default async function Uc4Page() {
     served_by: ServedBy;
   };
 
+  // Frozen UC4 route-reliability sidecar (real LPI/LSCI priors), read server-side via
+  // node:fs (mirror uc3/page.tsx's readCriticality()). Null-safe: a sidecar-less deploy
+  // returns null and the summary simply omits the reliability card.
+  const reliability = readUc4Reliability();
+
   return (
     <main className="mx-auto max-w-5xl px-6 py-16">
       <UcHeader id="uc4" servedBy={envelope.served_by} />
       <Uc4MapLoader envelope={envelope} />
-      <Uc4Summary data={envelope} />
+      <Uc4Summary data={envelope} reliability={reliability} />
     </main>
   );
 }
