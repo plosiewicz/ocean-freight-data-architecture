@@ -133,6 +133,39 @@ export interface Uc4Envelope {
   // NOTE: intentionally NO `store` field — UC4 golden has none.
 }
 
+// ---- UC4 route-reliability SIDECAR (additive — NOT part of the serve() envelope) ----
+//
+// These mirror data/golden/uc4-reliability.json field-for-field — the sidecar produced by
+// scripts/freeze_uc4_reliability.py, which runs analytics/route_reliability.route_reliability
+// over the UC4 golden path hops with the REAL cached World Bank LPI / UNCTAD LSCI priors.
+// They are DELIBERATELY NOT added to Uc4Envelope (and the sidecar adds NO key to
+// uc4.golden.json), so the byte-exact golden parity test in web/lib/arango.test.ts is
+// unaffected. web/lib/reliability.ts reads the sidecar server-side; uc4-summary.tsx renders it.
+
+export interface Uc4LegReliability {
+  lane_key: string;
+  dest_country: string;
+  expected_delay_hours: number;
+  on_time_pct: number;
+  delay_risk_pct: number;
+  connectivity_score: number;
+  lpi: number;
+}
+
+export interface Uc4RouteReliability {
+  legs: Uc4LegReliability[];
+  expected_delay_hours: number;
+  on_time_pct: number;
+  delay_risk_pct: number;
+  connectivity_score: number;
+}
+
+export interface Uc4ReliabilitySidecar {
+  baseline_reliability: Uc4RouteReliability;
+  reroute_reliability: Uc4RouteReliability;
+  frozen_at_iso: string;
+}
+
 // ---- DATA-07 coordinate-enriched variants (Phase 10) ----
 //
 // The base Uc3Envelope/Uc4Envelope above mirror the golden JSON field-for-field

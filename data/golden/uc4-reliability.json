@@ -1,0 +1,46 @@
+{
+  "baseline_reliability": {
+    "connectivity_score": 41.59,
+    "delay_risk_pct": 28.25,
+    "expected_delay_hours": 18.0,
+    "legs": [
+      {
+        "connectivity_score": 41.59,
+        "delay_risk_pct": 28.25,
+        "dest_country": "CHN",
+        "expected_delay_hours": 18.0,
+        "lane_key": "USNYC__CNSHA",
+        "lpi": 3.7,
+        "on_time_pct": 71.75
+      }
+    ],
+    "on_time_pct": 71.75
+  },
+  "frozen_at_iso": "2026-06-16T18:00:03.580451Z",
+  "reroute_reliability": {
+    "connectivity_score": 17.3,
+    "delay_risk_pct": 40.71,
+    "expected_delay_hours": 33.0,
+    "legs": [
+      {
+        "connectivity_score": 17.3,
+        "delay_risk_pct": 17.36,
+        "dest_country": "USA",
+        "expected_delay_hours": 15.0,
+        "lane_key": "USNYC__USLAX",
+        "lpi": 3.8,
+        "on_time_pct": 82.64
+      },
+      {
+        "connectivity_score": 41.59,
+        "delay_risk_pct": 28.25,
+        "dest_country": "CHN",
+        "expected_delay_hours": 18.0,
+        "lane_key": "USLAX__CNSHA",
+        "lpi": 3.7,
+        "on_time_pct": 71.75
+      }
+    ],
+    "on_time_pct": 59.29
+  }
+}

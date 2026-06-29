@@ -15,6 +15,9 @@ data/*
 !data/golden/
 data/golden/*
 !data/golden/*.golden.json
+# ...and the UC4 route-reliability sidecar (credential-free counts/floats only; the
+# committed output of scripts/freeze_uc4_reliability.py, shipped by copy-server-assets.mjs).
+!data/golden/uc4-reliability.json
 
 # Local credentials / config — no committed secrets (DEL-02 precedent, threats T-02-01 / T-03-01)
 .env
